@@ -29,8 +29,9 @@ def main() -> None:
 
     gui_h = root / "app/src/main/cpp/samp/gui/gui.h"
     rgba_cpp = root / "app/src/main/cpp/samp/game/rgba.cpp"
+    network_h = root / "app/src/main/cpp/samp/voice_new/Network.h"
 
-    for required in (gui_h, rgba_cpp):
+    for required in (gui_h, rgba_cpp, network_h):
         if not required.exists():
             raise SystemExit(f"[ARL NATIVE FIX] arquivo não encontrado: {required}")
 
@@ -49,7 +50,20 @@ def main() -> None:
         '#include "rgba.h"'
     )
 
-    print("[ARL NATIVE FIX] auditoria v2 concluída")
+    # A pasta real do RakNet nesta branch é vendor/raknet (minúsculo),
+    # enquanto voice_new/Network.h usa vendor/RakNet.
+    replace_required(
+        network_h,
+        '#include "../vendor/RakNet/BitStream.h"',
+        '#include "../vendor/raknet/BitStream.h"'
+    )
+    replace_required(
+        network_h,
+        '#include "../vendor/RakNet/RakClient.h"',
+        '#include "../vendor/raknet/RakClient.h"'
+    )
+
+    print("[ARL NATIVE FIX] auditoria v3 concluída")
 
 
 if __name__ == "__main__":
