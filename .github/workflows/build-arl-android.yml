@@ -43,7 +43,14 @@ jobs:
           META="$(find "$TESTROOT/dist" -name '*.meta.json' -print -quit)"
           MANIFEST="$(find "$TESTROOT/dist" -name '*.manifest.json' -print -quit)"
           cp launcher.json "$TESTROOT/launcher.json"
-          cp production-state.json "$TESTROOT/production-state.json"
+          cat > "$TESTROOT/production-state.json" <<'JSON'
+          {
+            "schema": 1,
+            "signingCertSha256": "",
+            "active": {"app": null, "data": null},
+            "history": {"app": [], "data": []}
+          }
+          JSON
           python3 tools/activate_arl_data.py \
             --launcher "$TESTROOT/launcher.json" \
             --metadata "$META" \
@@ -63,7 +70,7 @@ jobs:
             --version-name ci-test \
             --min-version-code 998 \
             --mandatory
-          CERT_A="$(python3 -c "import json; s=json.load(open('production-state.json')); print(s.get('signingCertSha256') or 'a'*64)")"
+          CERT_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           CERT_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
           python3 tools/production_state.py capture-app \
             --state "$TESTROOT/production-state.json" \
@@ -121,7 +128,7 @@ jobs:
           assert len(s['signingCertSha256'])==64
           assert len(s['history']['data'])==1
           assert len(s['history']['app'])==1
-          print('ARL Phase 5 production tooling self-test OK')
+          print('ARL production tooling self-test OK')
           PY
 
       - name: Checkout SAMP-Mobile GTA-2.10
