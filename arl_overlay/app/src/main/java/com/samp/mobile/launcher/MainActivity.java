@@ -35,10 +35,14 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
     private EditText nickname;
-    private TextView endpoint, status, dataStatus;
-    private Button playButton, repairButton;
-    private ProgressBar dataProgress;
+    private TextView endpoint, status, dataStatus, appUpdateStatus;
+    private Button playButton, repairButton, appUpdateButton;
+    private ProgressBar dataProgress, appUpdateProgress;
     private boolean dataBusy = false;
+    private boolean appBusy = false;
+    private boolean remoteReady = false;
+    private boolean waitingInstallPermission = false;
+    private File downloadedUpdateApk;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     /* Compatibility surface for original upstream fragments/adapters. */
@@ -56,6 +60,9 @@ public class MainActivity extends AppCompatActivity {
         status = findViewById(R.id.arl_status);
         dataStatus = findViewById(R.id.arl_data_status);
         dataProgress = findViewById(R.id.arl_data_progress);
+        appUpdateStatus = findViewById(R.id.arl_app_update_status);
+        appUpdateProgress = findViewById(R.id.arl_app_update_progress);
+        appUpdateButton = findViewById(R.id.arl_app_update);
         playButton = findViewById(R.id.arl_play);
         repairButton = findViewById(R.id.arl_repair);
 
@@ -65,24 +72,27 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.arl_instagram).setOnClickListener(v -> open(ArlConfig.INSTAGRAM));
         findViewById(R.id.arl_forum).setOnClickListener(v -> open(ArlConfig.FORUM));
         repairButton.setOnClickListener(v -> beginRepair(false));
+        appUpdateButton.setOnClickListener(v -> beginAppUpdate());
         playButton.setOnClickListener(v -> play());
 
         endpoint.setText(ArlConfig.DEFAULT_HOST + ":" + ArlConfig.DEFAULT_PORT);
         status.setText("CONSULTANDO SERVIDOR...");
         dataStatus.setText("VERIFICANDO DATA...");
         dataProgress.setVisibility(View.GONE);
+        appUpdateStatus.setVisibility(View.GONE);
+        appUpdateProgress.setVisibility(View.GONE);
+        appUpdateButton.setVisibility(View.GONE);
         playButton.setEnabled(false);
 
         ArlRemoteConfig.refresh(this, () -> {
+            remoteReady = true;
             endpoint.setText(ArlRemoteConfig.host() + ":" + ArlRemoteConfig.port());
+            refreshAppUpdateState();
             refreshDataState();
 
-            if(ArlRemoteConfig.maintenance()) {
-                status.setText("MANUTENÇÃO");
-                playButton.setEnabled(false);
-            } else {
-                refreshStatus();
-            }
+            if(ArlRemoteConfig.maintenance()) status.setText("MANUTENÇÃO");
+            else refreshStatus();
+            updatePlayEnabled();
         });
     }
 
@@ -98,27 +108,101 @@ public class MainActivity extends AppCompatActivity {
         } catch(Exception ignored) {}
     }
 
+    private void refreshAppUpdateState() {
+        if(appBusy) return;
+        if(!ArlAppUpdateManager.updateAvailable(this)) {
+            appUpdateStatus.setVisibility(View.GONE);
+            appUpdateProgress.setVisibility(View.GONE);
+            appUpdateButton.setVisibility(View.GONE);
+            return;
+        }
+
+        boolean required = ArlAppUpdateManager.updateRequired(this);
+        appUpdateStatus.setVisibility(View.VISIBLE);
+        appUpdateButton.setVisibility(View.VISIBLE);
+        appUpdateButton.setEnabled(true);
+        appUpdateProgress.setVisibility(View.GONE);
+        String version = ArlRemoteConfig.appVersionName();
+        appUpdateStatus.setText((required ? "ATUALIZAÇÃO OBRIGATÓRIA" : "NOVA VERSÃO DO LAUNCHER")
+                + (version.isEmpty() ? "" : " • " + version));
+        appUpdateButton.setText(required ? "ATUALIZAR LAUNCHER AGORA" : "ATUALIZAR LAUNCHER");
+    }
+
+    private void beginAppUpdate() {
+        if(appBusy || !ArlAppUpdateManager.updateAvailable(this)) return;
+
+        appBusy = true;
+        appUpdateStatus.setVisibility(View.VISIBLE);
+        appUpdateProgress.setVisibility(View.VISIBLE);
+        appUpdateProgress.setIndeterminate(false);
+        appUpdateProgress.setProgress(0);
+        appUpdateButton.setVisibility(View.VISIBLE);
+        appUpdateButton.setEnabled(false);
+        appUpdateStatus.setText("PREPARANDO ATUALIZAÇÃO DO LAUNCHER...");
+        updatePlayEnabled();
+
+        ArlAppUpdateManager.download(this, new ArlAppUpdateManager.Listener() {
+            @Override public void onProgress(int percent, String text) {
+                appUpdateProgress.setProgress(percent);
+                appUpdateStatus.setText(text + " • " + percent + "%");
+            }
+
+            @Override public void onComplete(boolean success, String message, File apk) {
+                appBusy = false;
+                appUpdateProgress.setVisibility(View.GONE);
+                appUpdateButton.setEnabled(true);
+                if(!success || apk == null) {
+                    appUpdateStatus.setText("FALHA AO ATUALIZAR O LAUNCHER");
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                    updatePlayEnabled();
+                    return;
+                }
+
+                downloadedUpdateApk = apk;
+                appUpdateStatus.setText("APK VERIFICADO • PRONTO PARA INSTALAR");
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                if(!ArlAppUpdateManager.canInstallPackages(MainActivity.this)) {
+                    waitingInstallPermission = true;
+                    appUpdateStatus.setText("PERMITA INSTALAR APPS DESTA FONTE");
+                    ArlAppUpdateManager.openUnknownSourcesSettings(MainActivity.this);
+                    return;
+                }
+                installDownloadedUpdate();
+            }
+        });
+    }
+
+    private void installDownloadedUpdate() {
+        try {
+            if(downloadedUpdateApk == null || !downloadedUpdateApk.isFile()) return;
+            waitingInstallPermission = false;
+            ArlAppUpdateManager.install(this, downloadedUpdateApk);
+        } catch(Exception e) {
+            Toast.makeText(this, "Não foi possível abrir o instalador do Android.", Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void refreshDataState() {
         if(dataBusy) return;
 
         if(!ArlRemoteConfig.hasDataRelease()) {
             dataStatus.setText("DATA LOCAL • PACOTE REMOTO AINDA NÃO PUBLICADO");
             repairButton.setEnabled(false);
-            if(!ArlRemoteConfig.maintenance()) playButton.setEnabled(true);
+            updatePlayEnabled();
             return;
         }
 
         if(!ArlRemoteConfig.dataManifestReady()) {
             dataStatus.setText("MANIFESTO DA DATA INDISPONÍVEL");
             repairButton.setEnabled(false);
-            playButton.setEnabled(false);
+            updatePlayEnabled();
             return;
         }
 
         if(!ArlDataManager.isConfigured()) {
             dataStatus.setText("CONFIGURAÇÃO DA DATA INVÁLIDA");
             repairButton.setEnabled(false);
-            playButton.setEnabled(false);
+            updatePlayEnabled();
             return;
         }
 
@@ -127,13 +211,12 @@ public class MainActivity extends AppCompatActivity {
             String version = ArlRemoteConfig.dataVersion();
             dataStatus.setText("ATUALIZAÇÃO DE ARQUIVOS NECESSÁRIA" +
                     (version.isEmpty() ? "" : " • " + version));
-            playButton.setEnabled(false);
         } else {
             String installed = ArlDataManager.installedVersion(this);
             dataStatus.setText("DATA VERIFICADA" +
                     (installed.isEmpty() ? "" : " • " + installed));
-            if(!ArlRemoteConfig.maintenance()) playButton.setEnabled(true);
         }
+        updatePlayEnabled();
     }
 
     private void beginRepair(boolean force) {
@@ -154,12 +237,12 @@ public class MainActivity extends AppCompatActivity {
         }
 
         dataBusy = true;
-        playButton.setEnabled(false);
         repairButton.setEnabled(false);
         dataProgress.setVisibility(View.VISIBLE);
         dataProgress.setIndeterminate(false);
         dataProgress.setProgress(0);
         dataStatus.setText("PREPARANDO VERIFICAÇÃO...");
+        updatePlayEnabled();
 
         ArlDataManager.verifyOrRepair(this, force, new ArlDataManager.Listener() {
             @Override public void onState(String text) {
@@ -174,42 +257,56 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onComplete(boolean success, String message) {
                 dataBusy = false;
                 dataProgress.setVisibility(View.GONE);
-
                 if(success) {
                     refreshDataState();
                     Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                 } else {
                     repairButton.setEnabled(ArlRemoteConfig.dataManifestReady());
                     dataStatus.setText("FALHA NA DATA • TOQUE EM REPARAR");
-                    playButton.setEnabled(false);
                     Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                 }
+                updatePlayEnabled();
             }
         });
     }
 
+    private boolean dataBlocksPlay() {
+        if(!ArlRemoteConfig.hasDataRelease()) return false;
+        if(!ArlRemoteConfig.dataManifestReady()) return true;
+        if(!ArlDataManager.isConfigured()) return true;
+        return ArlDataManager.requiresRepair(this);
+    }
+
+    private void updatePlayEnabled() {
+        boolean enabled = remoteReady
+                && !ArlRemoteConfig.maintenance()
+                && !dataBusy
+                && !appBusy
+                && !dataBlocksPlay()
+                && !ArlAppUpdateManager.updateRequired(this);
+        playButton.setEnabled(enabled);
+    }
+
     private void play() {
-        if(dataBusy) {
-            Toast.makeText(this, "Aguarde a atualização dos arquivos.", Toast.LENGTH_LONG).show();
+        if(dataBusy || appBusy) {
+            Toast.makeText(this, "Aguarde a atualização em andamento.", Toast.LENGTH_LONG).show();
             return;
         }
-
         if(ArlRemoteConfig.maintenance()) {
             Toast.makeText(this, "Servidor em manutenção.", Toast.LENGTH_LONG).show();
             return;
         }
-
-        if(ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
-            Toast.makeText(this,
-                    "Não foi possível verificar a integridade da DATA do ARL.",
-                    Toast.LENGTH_LONG).show();
+        if(ArlAppUpdateManager.updateRequired(this)) {
+            Toast.makeText(this, "Atualize o launcher antes de jogar.", Toast.LENGTH_LONG).show();
+            beginAppUpdate();
             return;
         }
-
+        if(ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
+            Toast.makeText(this, "Não foi possível verificar a integridade da DATA do ARL.", Toast.LENGTH_LONG).show();
+            return;
+        }
         if(ArlDataManager.isConfigured() && ArlDataManager.requiresRepair(this)) {
-            Toast.makeText(this,
-                    "Os arquivos do ARL precisam ser atualizados antes de jogar.",
-                    Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Os arquivos do ARL precisam ser atualizados antes de jogar.", Toast.LENGTH_LONG).show();
             beginRepair(false);
             return;
         }
@@ -255,22 +352,22 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    public final ArrayList<SAMPServerInfo> getServerList() {
-        return mServersList;
+    @Override protected void onResume() {
+        super.onResume();
+        if(waitingInstallPermission && ArlAppUpdateManager.canInstallPackages(this)) {
+            installDownloadedUpdate();
+        }
     }
 
-    public final ArrayList<SAMPServerInfo> getFavoriteServerList() {
-        return mFavoriteServersList;
-    }
+    public final ArrayList<SAMPServerInfo> getServerList() { return mServersList; }
+    public final ArrayList<SAMPServerInfo> getFavoriteServerList() { return mFavoriteServersList; }
 
     public void refreshFavoriteServers() {
         for (Fragment fragment : getSupportFragmentManager().getFragments()) {
             if (!(fragment instanceof ServersFragment) || !fragment.isAdded()) continue;
-
             for (Fragment child : fragment.getChildFragmentManager().getFragments()) {
                 if (!(child instanceof ServerPagesItemFragment)) continue;
                 if (((ServerPagesItemFragment) child).getPage() != 0 || child.getView() == null) continue;
-
                 RecyclerView view = child.getView().findViewById(R.id.server_recycler);
                 if (view == null || view.getAdapter() == null) continue;
                 view.post(() -> {
@@ -287,8 +384,7 @@ public class MainActivity extends AppCompatActivity {
                 activity.getSystemService(Context.INPUT_METHOD_SERVICE);
         View focused = activity.getCurrentFocus();
         if (inputManager != null && focused != null) {
-            inputManager.hideSoftInputFromWindow(
-                    focused.getWindowToken(), InputMethodManager.HIDE_NOT_ALWAYS);
+            inputManager.hideSoftInputFromWindow(focused.getWindowToken(), InputMethodManager.HIDE_NOT_ALWAYS);
         }
     }
 
