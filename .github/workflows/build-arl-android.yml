@@ -24,6 +24,40 @@ jobs:
       - name: Checkout ARL patch repo
         uses: actions/checkout@v5
 
+      - name: Self-test DATA release tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          TESTROOT="$(mktemp -d)"
+          mkdir -p "$TESTROOT/source/SAMP" "$TESTROOT/source/texdb"
+          printf 'ARL_TEST_A' > "$TESTROOT/source/SAMP/test.dat"
+          printf 'ARL_TEST_B' > "$TESTROOT/source/texdb/test.txd"
+          printf 'Nick_Name' > "$TESTROOT/source/SAMP/settings.ini"
+          python3 tools/build_arl_data.py \
+            --source "$TESTROOT/source" \
+            --version ci-test \
+            --output "$TESTROOT/dist"
+          META="$(find "$TESTROOT/dist" -name '*.meta.json' -print -quit)"
+          MANIFEST="$(find "$TESTROOT/dist" -name '*.manifest.json' -print -quit)"
+          cp launcher.json "$TESTROOT/launcher.json"
+          python3 tools/activate_arl_data.py \
+            --launcher "$TESTROOT/launcher.json" \
+            --metadata "$META" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag data-vci-test
+          python3 - "$MANIFEST" "$TESTROOT/launcher.json" <<'PY'
+          import json, sys
+          m=json.load(open(sys.argv[1], encoding='utf-8'))
+          l=json.load(open(sys.argv[2], encoding='utf-8'))
+          paths={x['path'] for x in m['files']}
+          assert paths == {'SAMP/test.dat','texdb/test.txd'}, paths
+          d=l['client']['data']
+          assert d['version']=='ci-test'
+          assert len(d['sha256'])==64
+          assert d['manifestUrl'].endswith('.manifest.json')
+          print('DATA tooling self-test OK')
+          PY
+
       - name: Checkout SAMP-Mobile GTA-2.10
         uses: actions/checkout@v5
         with:
