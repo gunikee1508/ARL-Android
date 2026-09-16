@@ -1,0 +1,154 @@
+name: Phase 8 - Build GTA Brasil Mobile Layer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase8-mobile-layer-runtime
+    paths:
+      - tools/audit_gta_brasil_android.py
+      - tools/build_gta_brasil_mobile_layer.py
+      - tools/build_arl_data.py
+      - .github/workflows/build-gta-brasil-mobile-layer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-layer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout ARL Android
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned GTA Brasil source
+        uses: actions/checkout@v4
+        with:
+          repository: pedrolecio/gta-brasil
+          ref: 1876efdc788d014ce482128e2eb91a0413cf051b
+          path: _sources/gta-brasil
+          lfs: true
+          fetch-depth: 1
+
+      - name: Ensure GTA Brasil LFS payloads are present
+        working-directory: _sources/gta-brasil
+        run: |
+          git lfs install --local
+          git lfs pull
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install pinned conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            'Pillow==11.3.0' \
+            'git+https://github.com/Hancapo/rwfury@24d7460bf3ff1f8171d45e086774aba596fd3bed'
+
+      - name: Audit PC source before conversion
+        run: |
+          python tools/audit_gta_brasil_android.py \
+            '_sources/gta-brasil/GTA Brasil/.(mod)' \
+            --out gta-brasil-audit \
+            --source-repo pedrolecio/gta-brasil \
+            --source-revision 1876efdc788d014ce482128e2eb91a0413cf051b
+
+      - name: Build isolated Android layer
+        run: |
+          python tools/build_gta_brasil_mobile_layer.py \
+            '_sources/gta-brasil/GTA Brasil/.(mod)' \
+            --out gta-brasil-mobile-layer \
+            --source-repo pedrolecio/gta-brasil \
+            --source-revision 1876efdc788d014ce482128e2eb91a0413cf051b
+
+      - name: Validate generated mobile layer
+        run: |
+          python - <<'PY'
+          import json, struct
+          from pathlib import Path
+
+          root = Path('gta-brasil-mobile-layer')
+          manifest = json.loads((root/'arlbrasil/manifest.json').read_text(encoding='utf-8'))
+          assert manifest['policy']['stock_archives_modified'] is False
+          assert manifest['policy']['windows_binaries_included'] is False
+          assert manifest['policy']['cleo_included'] is False
+
+          img = root/'arlbrasil/arlbrasil.img'
+          with img.open('rb') as f:
+              assert f.read(4) == b'VER2'
+              count = struct.unpack('<I', f.read(4))[0]
+          assert count == manifest['models']['selected'] > 0
+
+          listing = root/'texdb/arlbrasil/arlbrasil.txt'
+          text = listing.read_text(encoding='ascii')
+          assert text.startswith('cat=0 name=Default')
+          pngs = list((root/'texdb/arlbrasil/src').glob('*.png'))
+          assert len(pngs) == manifest['textures']['selected'] > 0
+
+          allowed = {'.img', '.json', '.txt', '.png', '.md'}
+          forbidden = {'.asi','.dll','.exe','.cleo','.cs','.bat','.cmd','.msi'}
+          for p in root.rglob('*'):
+              if not p.is_file():
+                  continue
+              assert p.suffix.lower() not in forbidden, p
+              assert p.suffix.lower() in allowed, p
+
+          print('Phase 8 generated layer validation: OK')
+          print('Models:', count)
+          print('Textures:', len(pngs))
+          PY
+
+      - name: Preserve upstream credits and licenses
+        run: |
+          mkdir -p gta-brasil-mobile-layer/upstream
+          cp _sources/gta-brasil/LICENSE gta-brasil-mobile-layer/upstream/LICENSE-GTA-BRASIL.txt
+          cp _sources/gta-brasil/CREDITOS.md gta-brasil-mobile-layer/upstream/CREDITOS-GTA-BRASIL.md
+          cp _sources/gta-brasil/README.md gta-brasil-mobile-layer/upstream/README-GTA-BRASIL.md
+
+      - name: Package layer through ARL DATA pipeline
+        run: |
+          VERSION="phase8-gta-brasil-${GITHUB_SHA::7}"
+          python tools/build_arl_data.py \
+            --source gta-brasil-mobile-layer \
+            --version "$VERSION" \
+            --output dist-phase8-data
+
+      - name: Publish summary
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          m=json.load(open('gta-brasil-mobile-layer/arlbrasil/manifest.json', encoding='utf-8'))
+          print('# Phase 8 GTA Brasil mobile layer')
+          print()
+          print(f"- DFF discovered: **{m['models']['discovered']}**")
+          print(f"- DFF selected into isolated IMG: **{m['models']['selected']}**")
+          print(f"- DFF basename conflicts excluded: **{len(m['models']['conflicts'])}**")
+          print(f"- TXD files scanned: **{m['textures']['txd_files']}**")
+          print(f"- textures converted to loose PNG TEXDB: **{m['textures']['selected']}**")
+          print(f"- texture-name conflicts excluded: **{len(m['textures']['conflicts'])}**")
+          print(f"- TXD/texture decode failures: **{len(m['textures']['failures'])}**")
+          print()
+          print('Stock GTA3.IMG/GTA_INT.IMG were not modified.')
+          PY
+
+      - name: Upload raw converted layer
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase8-gta-brasil-mobile-layer
+          path: gta-brasil-mobile-layer/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload ARL DATA-compatible package
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase8-gta-brasil-arl-data
+          path: dist-phase8-data/
+          if-no-files-found: error
+          retention-days: 14
