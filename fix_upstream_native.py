@@ -28,8 +28,11 @@ def main() -> None:
     root = Path(ap.parse_args().repo).resolve()
 
     gui_h = root / "app/src/main/cpp/samp/gui/gui.h"
-    if not gui_h.exists():
-        raise SystemExit("[ARL NATIVE FIX] gui.h não encontrado")
+    rgba_cpp = root / "app/src/main/cpp/samp/game/rgba.cpp"
+
+    for required in (gui_h, rgba_cpp):
+        if not required.exists():
+            raise SystemExit(f"[ARL NATIVE FIX] arquivo não encontrado: {required}")
 
     # Linux/Android CI é case-sensitive. O upstream inclui playerTabList.h,
     # porém o arquivo real versionado é playertablist.h.
@@ -39,7 +42,14 @@ def main() -> None:
         '#include "samp_widgets/playertablist.h"'
     )
 
-    print("[ARL NATIVE FIX] auditoria v1 concluída")
+    # Mesmo problema em game/rgba.cpp: o arquivo real é rgba.h (minúsculo).
+    replace_required(
+        rgba_cpp,
+        '#include "RGBA.h"',
+        '#include "rgba.h"'
+    )
+
+    print("[ARL NATIVE FIX] auditoria v2 concluída")
 
 
 if __name__ == "__main__":
