@@ -6,9 +6,11 @@ on:
     branches: [ main ]
     paths-ignore:
       - 'launcher.json'
+      - 'production-state.json'
       - 'tools/**'
       - '.github/workflows/publish-arl-data.yml'
       - '.github/workflows/publish-arl-apk.yml'
+      - '.github/workflows/production-controls.yml'
       - 'docs/**'
       - 'README.md'
 
@@ -41,10 +43,15 @@ jobs:
           META="$(find "$TESTROOT/dist" -name '*.meta.json' -print -quit)"
           MANIFEST="$(find "$TESTROOT/dist" -name '*.manifest.json' -print -quit)"
           cp launcher.json "$TESTROOT/launcher.json"
+          cp production-state.json "$TESTROOT/production-state.json"
           python3 tools/activate_arl_data.py \
             --launcher "$TESTROOT/launcher.json" \
             --metadata "$META" \
             --repository "$GITHUB_REPOSITORY" \
+            --tag data-vci-test
+          python3 tools/production_state.py capture-data \
+            --state "$TESTROOT/production-state.json" \
+            --launcher "$TESTROOT/launcher.json" \
             --tag data-vci-test
           printf 'FAKE_APK_FOR_METADATA_TEST' > "$TESTROOT/Amazing-Real-Life-ci.apk"
           python3 tools/activate_arl_app.py \
@@ -56,10 +63,46 @@ jobs:
             --version-name ci-test \
             --min-version-code 998 \
             --mandatory
-          python3 - "$MANIFEST" "$TESTROOT/launcher.json" <<'PY'
+          CERT_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          CERT_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          python3 tools/production_state.py capture-app \
+            --state "$TESTROOT/production-state.json" \
+            --launcher "$TESTROOT/launcher.json" \
+            --tag android-vci-test-c999 \
+            --cert-sha256 "$CERT_A"
+          python3 tools/production_state.py validate \
+            --state "$TESTROOT/production-state.json" \
+            --launcher "$TESTROOT/launcher.json"
+          if python3 tools/production_state.py capture-app \
+            --state "$TESTROOT/production-state.json" \
+            --launcher "$TESTROOT/launcher.json" \
+            --tag android-vci-test-c999 \
+            --cert-sha256 "$CERT_B"; then
+            echo 'Signing continuity test FAILED: different certificate was accepted' >&2
+            exit 1
+          else
+            echo 'Signing continuity negative test OK'
+          fi
+          python3 tools/production_state.py promote-data \
+            --state "$TESTROOT/production-state.json" \
+            --launcher "$TESTROOT/launcher.json" \
+            --version ci-test
+          python3 tools/production_state.py app-policy \
+            --launcher "$TESTROOT/launcher.json" \
+            --min-version-code 999 \
+            --mandatory false
+          python3 tools/production_state.py maintenance \
+            --launcher "$TESTROOT/launcher.json" --value on
+          python3 tools/production_state.py maintenance \
+            --launcher "$TESTROOT/launcher.json" --value off
+          python3 tools/production_state.py validate \
+            --state "$TESTROOT/production-state.json" \
+            --launcher "$TESTROOT/launcher.json"
+          python3 - "$MANIFEST" "$TESTROOT/launcher.json" "$TESTROOT/production-state.json" <<'PY'
           import json, sys
           m=json.load(open(sys.argv[1], encoding='utf-8'))
           l=json.load(open(sys.argv[2], encoding='utf-8'))
+          s=json.load(open(sys.argv[3], encoding='utf-8'))
           paths={x['path'] for x in m['files']}
           assert paths == {'SAMP/test.dat','texdb/test.txd'}, paths
           d=l['client']['data']
@@ -68,11 +111,17 @@ jobs:
           assert d['manifestUrl'].endswith('.manifest.json')
           a=l['app']
           assert a['latestVersionCode']==999
-          assert a['minVersionCode']==998
-          assert a['mandatory'] is True
+          assert a['minVersionCode']==999
+          assert a['mandatory'] is False
           assert len(a['sha256'])==64
           assert a['apkUrl'].endswith('.apk')
-          print('ARL release tooling self-test OK')
+          assert l['maintenance'] is False
+          assert s['active']['data']=='ci-test'
+          assert s['active']['app']==999
+          assert s['signingCertSha256']=='a'*64
+          assert len(s['history']['data'])==1
+          assert len(s['history']['app'])==1
+          print('ARL Phase 5 production tooling self-test OK')
           PY
 
       - name: Checkout SAMP-Mobile GTA-2.10
