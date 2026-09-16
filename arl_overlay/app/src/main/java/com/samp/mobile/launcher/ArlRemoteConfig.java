@@ -17,6 +17,22 @@ import java.util.List;
 public final class ArlRemoteConfig {
     public interface Callback { void onReady(); }
 
+    public static final class DataFile {
+        public final String path;
+        public final String sha256;
+        public final long bytes;
+
+        DataFile(String path, String sha256, long bytes) {
+            this.path = path == null ? "" : path.trim();
+            this.sha256 = sha256 == null ? "" : sha256.trim().toLowerCase();
+            this.bytes = bytes;
+        }
+
+        public boolean hasSha256() {
+            return sha256.matches("(?i)[0-9a-f]{64}");
+        }
+    }
+
     private static volatile String host = ArlConfig.DEFAULT_HOST;
     private static volatile int port = ArlConfig.DEFAULT_PORT;
     private static volatile boolean maintenance = false;
@@ -25,7 +41,7 @@ public final class ArlRemoteConfig {
     private static volatile String dataUrl = "";
     private static volatile String dataSha256 = "";
     private static volatile long dataBytes = -1L;
-    private static volatile List<String> requiredFiles = Collections.emptyList();
+    private static volatile List<DataFile> dataFiles = Collections.emptyList();
 
     private ArlRemoteConfig() {}
 
@@ -36,7 +52,7 @@ public final class ArlRemoteConfig {
     public static String dataUrl(){ return dataUrl; }
     public static String dataSha256(){ return dataSha256; }
     public static long dataBytes(){ return dataBytes; }
-    public static List<String> requiredFiles(){ return requiredFiles; }
+    public static List<DataFile> dataFiles(){ return dataFiles; }
 
     public static void refresh(Context context, Callback cb) {
         StringRequest req = new StringRequest(ArlConfig.REMOTE_CONFIG,
@@ -56,8 +72,8 @@ public final class ArlRemoteConfig {
 
                         JSONObject client = root.optJSONObject("client");
                         if(client != null) {
-                            // Accept both the original flat Phase-1 format and the
-                            // preferred Phase-2 nested "data" object.
+                            // Preferred Phase-2 format: client.data.{version,url,sha256,bytes,files}.
+                            // Flat Phase-1 fields remain accepted for compatibility.
                             JSONObject data = client.optJSONObject("data");
                             JSONObject src = data != null ? data : client;
 
@@ -66,19 +82,34 @@ public final class ArlRemoteConfig {
                             dataUrl = src.optString("url",
                                     src.optString("dataUrl", dataUrl)).trim();
                             dataSha256 = src.optString("sha256",
-                                    src.optString("dataSha256", dataSha256)).trim();
+                                    src.optString("dataSha256", dataSha256)).trim().toLowerCase();
                             dataBytes = src.optLong("bytes",
                                     src.optLong("dataBytes", dataBytes));
 
-                            JSONArray required = src.optJSONArray("requiredFiles");
-                            if(required != null) {
-                                ArrayList<String> next = new ArrayList<>();
-                                for(int i = 0; i < required.length(); i++) {
-                                    String item = required.optString(i, "").trim();
-                                    if(!item.isEmpty()) next.add(item);
+                            ArrayList<DataFile> nextFiles = new ArrayList<>();
+                            JSONArray files = src.optJSONArray("files");
+                            if(files != null) {
+                                for(int i = 0; i < files.length(); i++) {
+                                    JSONObject item = files.optJSONObject(i);
+                                    if(item == null) continue;
+                                    String path = item.optString("path", "").trim();
+                                    String sha = item.optString("sha256", "").trim();
+                                    long bytes = item.optLong("bytes", -1L);
+                                    if(!path.isEmpty()) nextFiles.add(new DataFile(path, sha, bytes));
                                 }
-                                requiredFiles = Collections.unmodifiableList(next);
                             }
+
+                            // Compatibility fallback for the earlier string-only list.
+                            if(nextFiles.isEmpty()) {
+                                JSONArray required = src.optJSONArray("requiredFiles");
+                                if(required != null) {
+                                    for(int i = 0; i < required.length(); i++) {
+                                        String path = required.optString(i, "").trim();
+                                        if(!path.isEmpty()) nextFiles.add(new DataFile(path, "", -1L));
+                                    }
+                                }
+                            }
+                            dataFiles = Collections.unmodifiableList(nextFiles);
                         }
                     } catch(Exception ignored) {}
                     cb.onReady();
