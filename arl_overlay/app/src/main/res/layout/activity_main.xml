@@ -3,216 +3,285 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:fillViewport="true"
-    android:background="#090B0E">
-
-  <LinearLayout
-      android:layout_width="match_parent"
-      android:layout_height="match_parent"
-      android:orientation="vertical"
-      android:gravity="center_horizontal"
-      android:padding="28dp">
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="AMAZING REAL LIFE"
-        android:textColor="#D8BB57"
-        android:textStyle="bold"
-        android:textSize="28sp"
-        android:gravity="center"/>
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="RPG • A SUA VIDA, AS SUAS ESCOLHAS"
-        android:textColor="#8E969F"
-        android:textSize="11sp"
-        android:gravity="center"/>
+    android:background="@drawable/arl_screen_bg"
+    android:overScrollMode="never">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="26dp"
         android:orientation="vertical"
-        android:padding="18dp"
-        android:background="@drawable/arl_panel">
+        android:gravity="center_horizontal"
+        android:paddingLeft="22dp"
+        android:paddingTop="24dp"
+        android:paddingRight="22dp"
+        android:paddingBottom="28dp">
 
-      <TextView
-          android:id="@+id/arl_status"
-          android:layout_width="match_parent"
-          android:layout_height="wrap_content"
-          android:text="CONSULTANDO SERVIDOR..."
-          android:textColor="#65D889"
-          android:textStyle="bold"
-          android:textSize="15sp"/>
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="118dp"
+            android:adjustViewBounds="true"
+            android:contentDescription="Amazing Real Life"
+            android:scaleType="fitCenter"
+            android:src="@drawable/arl_splash_banner" />
 
-      <TextView
-          android:id="@+id/arl_endpoint"
-          android:layout_width="match_parent"
-          android:layout_height="wrap_content"
-          android:layout_marginTop="5dp"
-          android:text="play.arl-samprpg.site:7777"
-          android:textColor="#C4CAD0"
-          android:textSize="12sp"/>
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center"
+            android:letterSpacing="0.12"
+            android:text="AMAZING REAL LIFE"
+            android:textColor="#E2C96E"
+            android:textSize="25sp"
+            android:textStyle="bold" />
 
-      <TextView
-          android:id="@+id/arl_app_update_status"
-          android:layout_width="match_parent"
-          android:layout_height="wrap_content"
-          android:layout_marginTop="14dp"
-          android:text="NOVA VERSÃO DO LAUNCHER"
-          android:textColor="#F0C95C"
-          android:textStyle="bold"
-          android:textSize="11sp"
-          android:visibility="gone"/>
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center"
+            android:letterSpacing="0.08"
+            android:text="RPG  •  SUA HISTÓRIA COMEÇA AQUI"
+            android:textColor="#838C96"
+            android:textSize="10sp" />
 
-      <ProgressBar
-          android:id="@+id/arl_app_update_progress"
-          style="?android:attr/progressBarStyleHorizontal"
-          android:layout_width="match_parent"
-          android:layout_height="6dp"
-          android:layout_marginTop="8dp"
-          android:max="100"
-          android:progress="0"
-          android:progressTint="#F0C95C"
-          android:progressBackgroundTint="#30363D"
-          android:visibility="gone"/>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:orientation="vertical"
+            android:padding="18dp"
+            android:background="@drawable/arl_panel">
 
-      <Button
-          android:id="@+id/arl_app_update"
-          android:layout_width="match_parent"
-          android:layout_height="48dp"
-          android:layout_marginTop="8dp"
-          android:text="ATUALIZAR LAUNCHER"
-          android:textStyle="bold"
-          android:textColor="#101216"
-          android:backgroundTint="#F0C95C"
-          android:visibility="gone"/>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-      <TextView
-          android:id="@+id/arl_base_status"
-          android:layout_width="match_parent"
-          android:layout_height="wrap_content"
-          android:layout_marginTop="14dp"
-          android:text="VERIFICANDO BASE GTA SA..."
-          android:textColor="#F0C95C"
-          android:textStyle="bold"
-          android:textSize="11sp"/>
+                <TextView
+                    android:id="@+id/arl_status"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="CONSULTANDO SERVIDOR..."
+                    android:textColor="#65D889"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
 
-      <ProgressBar
-          android:id="@+id/arl_base_progress"
-          style="?android:attr/progressBarStyleHorizontal"
-          android:layout_width="match_parent"
-          android:layout_height="6dp"
-          android:layout_marginTop="8dp"
-          android:max="100"
-          android:progress="0"
-          android:progressTint="#F0C95C"
-          android:progressBackgroundTint="#30363D"
-          android:visibility="gone"/>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="ARL MOBILE"
+                    android:textColor="#D8BB57"
+                    android:textSize="9sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
 
-      <Button
-          android:id="@+id/arl_base_import"
-          android:layout_width="match_parent"
-          android:layout_height="48dp"
-          android:layout_marginTop="8dp"
-          android:text="IMPORTAR BASE GTA SA"
-          android:textStyle="bold"
-          android:textColor="#101216"
-          android:backgroundTint="#F0C95C"/>
+            <TextView
+                android:id="@+id/arl_endpoint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="play.arl-samprpg.site:7777"
+                android:textColor="#9DA5AE"
+                android:textSize="11sp" />
 
-      <TextView
-          android:id="@+id/arl_data_status"
-          android:layout_width="match_parent"
-          android:layout_height="wrap_content"
-          android:layout_marginTop="14dp"
-          android:text="VERIFICANDO DATA..."
-          android:textColor="#D8BB57"
-          android:textStyle="bold"
-          android:textSize="11sp"/>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="2dp"
+                android:background="#252C33" />
 
-      <ProgressBar
-          android:id="@+id/arl_data_progress"
-          style="?android:attr/progressBarStyleHorizontal"
-          android:layout_width="match_parent"
-          android:layout_height="6dp"
-          android:layout_marginTop="8dp"
-          android:max="100"
-          android:progress="0"
-          android:progressTint="#D8BB57"
-          android:progressBackgroundTint="#30363D"
-          android:visibility="gone"/>
+            <TextView
+                android:id="@+id/arl_app_update_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="NOVA VERSÃO DO LAUNCHER"
+                android:textColor="#E2C96E"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
 
-      <EditText
-          android:id="@+id/arl_nickname"
-          android:layout_width="match_parent"
-          android:layout_height="54dp"
-          android:layout_marginTop="18dp"
-          android:hint="Seu_Nickname"
-          android:maxLength="24"
-          android:singleLine="true"
-          android:paddingLeft="16dp"
-          android:paddingRight="16dp"
-          android:textColor="#FFFFFF"
-          android:textColorHint="#68717A"
-          android:background="@drawable/arl_input"/>
+            <ProgressBar
+                android:id="@+id/arl_app_update_progress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="5dp"
+                android:layout_marginTop="8dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#D8BB57"
+                android:progressBackgroundTint="#292F36"
+                android:visibility="gone" />
 
-      <Button
-          android:id="@+id/arl_play"
-          android:layout_width="match_parent"
-          android:layout_height="58dp"
-          android:layout_marginTop="14dp"
-          android:text="JOGAR AGORA"
-          android:textStyle="bold"
-          android:textColor="#101216"
-          android:textSize="16sp"
-          android:backgroundTint="#D8BB57"/>
+            <Button
+                android:id="@+id/arl_app_update"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="9dp"
+                android:background="@drawable/arl_button_primary"
+                android:stateListAnimator="@null"
+                android:text="ATUALIZAR LAUNCHER"
+                android:textColor="#0B0D10"
+                android:textStyle="bold"
+                android:visibility="gone" />
 
-      <Button
-          android:id="@+id/arl_repair"
-          android:layout_width="match_parent"
-          android:layout_height="48dp"
-          android:layout_marginTop="8dp"
-          android:text="VERIFICAR / REPARAR ARQUIVOS ARL"
-          android:textColor="#D7DCE1"
-          android:backgroundTint="#242A30"/>
+            <TextView
+                android:id="@+id/arl_base_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="VERIFICANDO BASE GTA SA..."
+                android:textColor="#E2C96E"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <ProgressBar
+                android:id="@+id/arl_base_progress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="5dp"
+                android:layout_marginTop="8dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#D8BB57"
+                android:progressBackgroundTint="#292F36"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/arl_base_import"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="9dp"
+                android:background="@drawable/arl_button_primary"
+                android:stateListAnimator="@null"
+                android:text="IMPORTAR BASE GTA SA"
+                android:textColor="#0B0D10"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/arl_data_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="PREPARANDO EXPERIÊNCIA ARL..."
+                android:textColor="#D8BB57"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <ProgressBar
+                android:id="@+id/arl_data_progress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="5dp"
+                android:layout_marginTop="8dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#D8BB57"
+                android:progressBackgroundTint="#292F36"
+                android:visibility="gone" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="IDENTIDADE DO PERSONAGEM"
+                android:textColor="#777F88"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08" />
+
+            <EditText
+                android:id="@+id/arl_nickname"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/arl_input"
+                android:hint="Seu_Nickname"
+                android:maxLength="24"
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:singleLine="true"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#626B75" />
+
+            <Button
+                android:id="@+id/arl_play"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/arl_button_primary"
+                android:stateListAnimator="@null"
+                android:text="ENTRAR NO AMAZING REAL LIFE"
+                android:textColor="#0A0C0F"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/arl_repair"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="9dp"
+                android:background="@drawable/arl_button_secondary"
+                android:stateListAnimator="@null"
+                android:text="VERIFICAR / REPARAR ARQUIVOS"
+                android:textColor="#D4D9DE"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/arl_discord"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_weight="1"
+                android:background="@drawable/arl_button_secondary"
+                android:stateListAnimator="@null"
+                android:text="DISCORD"
+                android:textColor="#C9CFD5"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/arl_instagram"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_marginLeft="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/arl_button_secondary"
+                android:stateListAnimator="@null"
+                android:text="INSTAGRAM"
+                android:textColor="#C9CFD5"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/arl_forum"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_marginLeft="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/arl_button_secondary"
+                android:stateListAnimator="@null"
+                android:text="FÓRUM"
+                android:textColor="#C9CFD5"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="15dp"
+            android:gravity="center"
+            android:text="CLIENTE OFICIAL • GTA BRASIL INTEGRADO • ARL"
+            android:textColor="#4F5861"
+            android:textSize="8sp"
+            android:letterSpacing="0.08" />
     </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="14dp"
-        android:orientation="horizontal">
-
-      <Button
-          android:id="@+id/arl_discord"
-          android:layout_width="0dp"
-          android:layout_height="48dp"
-          android:layout_weight="1"
-          android:text="DISCORD"
-          android:textColor="#E6E9EC"
-          android:backgroundTint="#181D22"/>
-
-      <Button
-          android:id="@+id/arl_instagram"
-          android:layout_width="0dp"
-          android:layout_height="48dp"
-          android:layout_marginLeft="6dp"
-          android:layout_weight="1"
-          android:text="INSTAGRAM"
-          android:textColor="#E6E9EC"
-          android:backgroundTint="#181D22"/>
-
-      <Button
-          android:id="@+id/arl_forum"
-          android:layout_width="0dp"
-          android:layout_height="48dp"
-          android:layout_marginLeft="6dp"
-          android:layout_weight="1"
-          android:text="FÓRUM"
-          android:textColor="#E6E9EC"
-          android:backgroundTint="#181D22"/>
-    </LinearLayout>
-  </LinearLayout>
 </ScrollView>
