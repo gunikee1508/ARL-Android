@@ -1,0 +1,228 @@
+name: Phase 9 - Build Premium Bundled Client
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase9-premium-client-runtime
+    paths:
+      - arl_overlay/**
+      - tools/patch_arl_brasil_runtime.py
+      - tools/patch_phase8_embedded_bootstrap.py
+      - tools/patch_phase9_premium_client.py
+      - apply_arl_phase1.py
+      - fix_upstream_native.py
+      - .github/workflows/build-phase9-premium-client.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ARL_VERSION_CODE: '110'
+      ARL_VERSION_NAME: '1.0.3-phase9-premium'
+      PHASE8_DATA_RUN_ID: '35151353048'
+      PHASE8_DATA_PACKAGE_BYTES: '428375058'
+      PHASE8_DATA_PACKAGE_SHA256: '6107f9da7a83e304de3d749b8ae70cb9ef563f634df04d88c9161a9fcb7d4889'
+
+    steps:
+      - name: Checkout ARL patch repo
+        uses: actions/checkout@v5
+
+      - name: Download validated GTA Brasil ARL DATA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phase8-gta-brasil-arl-data
+          path: phase8-data
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.PHASE8_DATA_RUN_ID }}
+
+      - name: Verify bundled DATA source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.zip' -print -quit)"
+          MANIFEST="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.manifest.json' -print -quit)"
+          META="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.meta.json' -print -quit)"
+          test -n "$PACKAGE" && test -n "$MANIFEST" && test -n "$META"
+          test "$(stat -c %s "$PACKAGE")" = "$PHASE8_DATA_PACKAGE_BYTES"
+          echo "$PHASE8_DATA_PACKAGE_SHA256  $PACKAGE" | sha256sum -c -
+          python3 - "$MANIFEST" "$META" <<'PY'
+          import json, sys
+          manifest = json.load(open(sys.argv[1], encoding='utf-8'))
+          meta = json.load(open(sys.argv[2], encoding='utf-8'))
+          assert manifest['version'] == meta['version'] == 'phase8-gta-brasil-6417354'
+          assert len(manifest['files']) == meta['fileCount'] == 8558
+          paths = {f['path'] for f in manifest['files']}
+          assert 'arlbrasil/arlbrasil.img' in paths
+          assert 'texdb/arlbrasil/arlbrasil.txt' in paths
+          assert sum(p.startswith('texdb/arlbrasil/src/') and p.endswith('.png') for p in paths) == 8552
+          print('Phase 9 input DATA validated:', meta['version'], meta['fileCount'])
+          PY
+
+      - name: Checkout SAMP-Mobile GTA-2.10
+        uses: actions/checkout@v5
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/**/*.gradle*
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
+      - name: Install Android components
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.2.11394342" \
+            "cmake;3.22.1"
+
+      - name: Apply normal ARL overlay
+        run: python3 apply_arl_phase1.py upstream
+
+      - name: Wire GTA Brasil native runtime
+        run: python3 tools/patch_arl_brasil_runtime.py upstream
+
+      - name: Wire bundled GTA Brasil bootstrap
+        run: python3 tools/patch_phase8_embedded_bootstrap.py upstream
+
+      - name: Apply Phase 9 premium runtime and native UI
+        run: python3 tools/patch_phase9_premium_client.py upstream
+
+      - name: Apply upstream native build fixes
+        run: python3 fix_upstream_native.py upstream
+
+      - name: Embed verified GTA Brasil DATA inside APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upstream/app/src/main/assets/arl
+          PACKAGE="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.zip' -print -quit)"
+          MANIFEST="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.manifest.json' -print -quit)"
+          META="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.meta.json' -print -quit)"
+          cp "$PACKAGE" upstream/app/src/main/assets/arl/embedded-data.zip
+          cp "$MANIFEST" upstream/app/src/main/assets/arl/embedded-data.manifest.json
+          cp "$META" upstream/app/src/main/assets/arl/embedded-data.meta.json
+          test "$(stat -c %s upstream/app/src/main/assets/arl/embedded-data.zip)" = "$PHASE8_DATA_PACKAGE_BYTES"
+          echo "$PHASE8_DATA_PACKAGE_SHA256  upstream/app/src/main/assets/arl/embedded-data.zip" | sha256sum -c -
+
+      - name: Verify Phase 9 source invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          test -f upstream/app/src/main/cpp/samp/arl/ArlRuntimeGuard.cpp
+          test -f upstream/app/src/main/cpp/samp/arl/ArlRuntimeGuard.h
+          grep -q '#include "arl/ArlRuntimeGuard.h"' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'ArlRuntimeGuard::BootSnapshot();' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'ArlRuntimeGuard::MarkGameReady();' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'CStreaming::AddImageToList(kImgRelative, true)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          grep -q 'TextureDatabaseRuntime::Load(kDbName, true, DF_UNC)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          grep -q 'ImColor(216, 187, 87, 255)' upstream/app/src/main/cpp/samp/gui/uisettings.cpp
+          grep -q 'ARL Phase 9' upstream/app/src/main/cpp/samp/gui/samp_widgets/splashscreen.cpp
+          grep -q 'arl_splash_status' upstream/app/src/main/res/layout/activity_splash.xml
+          grep -q 'ENTRAR NO AMAZING REAL LIFE' upstream/app/src/main/res/layout/activity_main.xml
+          grep -q 'ArlEmbeddedDataManager.installIfNeeded' upstream/app/src/main/java/com/samp/mobile/launcher/SplashActivity.java
+          grep -q 'versionCode 110' upstream/app/build.gradle
+          grep -q 'versionName "1.0.3-phase9-premium"' upstream/app/build.gradle
+          if grep -R -nE '\.(asi|dll|exe|cleo)([^A-Za-z0-9]|$)' upstream/app/src/main/assets/arl 2>/dev/null; then
+            echo 'Forbidden PC binary payload found in bundled assets' >&2
+            exit 1
+          fi
+
+      - name: Make Gradle executable
+        run: chmod +x upstream/gradlew
+
+      - name: Build Phase 9 premium debug APK
+        working-directory: upstream
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g
+        run: ./gradlew --stacktrace --no-daemon assembleDebug
+
+      - name: Validate bundled package inside built APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          python3 - "$APK" "$PHASE8_DATA_PACKAGE_BYTES" "$PHASE8_DATA_PACKAGE_SHA256" <<'PY'
+          import hashlib, json, sys, zipfile
+          apk, expected_bytes, expected_sha = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+          with zipfile.ZipFile(apk) as z:
+              names = set(z.namelist())
+              required = {
+                  'assets/arl/embedded-data.zip',
+                  'assets/arl/embedded-data.manifest.json',
+                  'assets/arl/embedded-data.meta.json',
+              }
+              assert required <= names, required - names
+              info = z.getinfo('assets/arl/embedded-data.zip')
+              assert info.file_size == expected_bytes
+              h = hashlib.sha256()
+              with z.open(info) as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              assert h.hexdigest() == expected_sha
+              meta = json.loads(z.read('assets/arl/embedded-data.meta.json'))
+              assert meta['version'] == 'phase8-gta-brasil-6417354'
+              assert meta['package']['sha256'] == expected_sha
+          print('Phase 9 APK bundled GTA Brasil validation: OK')
+          PY
+
+      - name: Collect Phase 9 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
+          cp "$APK" output/ARL-Android-1.0.3-phase9-premium-debug.apk
+          sha256sum output/*.apk | tee output/SHA256SUMS.txt
+          stat -c 'APK bytes: %s' output/*.apk | tee output/APK_SIZE.txt
+          cat > output/PHASE9.txt <<'TXT'
+          ARL Android 1.0.3-phase9-premium
+
+          Phase 9 premium client candidate.
+          - Preserves the validated Phase 8 bundled GTA Brasil layer.
+          - Adds ARL Runtime Guard diagnostics without replacing libGTASA.so.
+          - Adds graphite/gold native SA-MP UI palette and loading bar.
+          - Adds redesigned premium launcher and live bootstrap status.
+          - No ASI/DLL/EXE/CLEO PC payloads are bundled.
+          - Stock GTA3.IMG/GTA_INT.IMG are not overwritten by the GTA Brasil layer.
+          - Phase 8 stable branch remains untouched.
+          TXT
+
+      - name: Upload Phase 9 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Android-1.0.3-phase9-premium-debug
+          path: output/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
