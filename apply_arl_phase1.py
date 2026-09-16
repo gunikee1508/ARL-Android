@@ -9,7 +9,7 @@ def read(p): return p.read_text(encoding="utf-8-sig")
 def write(p,s):
     p.parent.mkdir(parents=True,exist_ok=True)
     p.write_text(s,encoding="utf-8",newline="\n")
-def die(s): raise SystemExit("[ARL PHASE1] ERRO: "+s)
+def die(s): raise SystemExit("[ARL PATCH] ERRO: "+s)
 
 def main():
     a=argparse.ArgumentParser()
@@ -35,60 +35,84 @@ def main():
     overlay=Path(__file__).resolve().parent/"arl_overlay"
     if not overlay.exists(): die("arl_overlay ausente")
 
-    b=r/".arl_phase1_backup"/time.strftime("%Y%m%d_%H%M%S")
-    for p in req+[r/"app/src/main/java/com/samp/mobile/launcher/MainActivity.java"]:
+    b=r/".arl_patch_backup"/time.strftime("%Y%m%d_%H%M%S")
+    backup_extra=[
+        r/"app/src/main/java/com/samp/mobile/launcher/MainActivity.java",
+        r/"app/src/main/java/com/samp/mobile/launcher/SplashActivity.java"
+    ]
+    for p in req+backup_extra:
         if p.exists():
             q=b/p.relative_to(r); q.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,q)
     print("[ARL] backup:",b)
 
-    # Native: settings.ini passa a controlar o endpoint real da sessão.
+    # Native: settings.ini controla host/porta reais da sessão.
     m=read(maincpp).replace("\t\t//ReadSettingFile();","\t\tReadSettingFile();",1)
     m=m.replace(
       'pNetGame = new CNetGame("94.23.168.153", 2305, pSettings->Get().szNickName, pSettings->Get().szPassword);',
       'pNetGame = new CNetGame(pSettings->Get().szHost, pSettings->Get().iPort, pSettings->Get().szNickName, pSettings->Get().szPassword);',1)
     write(maincpp,m)
 
-    # Remove repositório morto do upstream. Ele quebra a resolução de dependências
-    # antes mesmo do CMake por UnknownHost mint.splunk.com.
+    # Remove repositório morto do upstream.
     rg=read(rootgradle)
     rg2=re.sub(
         r"(?m)^\s*maven\s*\{\s*url\s*['\"]https://mint\.splunk\.com/gradle/?['\"]\s*\}\s*$\n?",
-        "",
-        rg
-    )
+        "", rg)
     if rg2 == rg and "mint.splunk.com" in rg:
         die("repositório Splunk encontrado em formato inesperado")
-    rg=rg2
-    write(rootgradle,rg)
+    write(rootgradle,rg2)
 
-    # App build: preserva package/JNI nesta fase e remove keystore upstream.
+    # Build-safe: preserva package/JNI e remove keystore upstream.
     g=read(gradle)
     if 'applicationId "com.samp.mobile"' not in g:
-        die("applicationId upstream inesperado; Phase 1 BUILD-SAFE exige com.samp.mobile")
+        die("applicationId upstream inesperado")
     ss=g.find("    signingConfigs {"); ee=g.find("    compileSdk ",ss)
     if ss!=-1 and ee!=-1:
         g=g[:ss]+g[ee:]
     g=g.replace("            signingConfig signingConfigs.release\n","")
-
-    # O upstream aponta para PRDownloader 1.0.1, cujo build do JitPack está quebrado.
-    # O próprio projeto upstream da biblioteca publica atualmente 1.0.2 como coordenada.
     if "com.github.amitshekhariitbhu:PRDownloader:1.0.1" in g:
-        g=g.replace(
-            "com.github.amitshekhariitbhu:PRDownloader:1.0.1",
-            "com.github.amitshekhariitbhu:PRDownloader:1.0.2",
-            1
-        )
+        g=g.replace("com.github.amitshekhariitbhu:PRDownloader:1.0.1",
+                    "com.github.amitshekhariitbhu:PRDownloader:1.0.2",1)
     write(gradle,g)
 
+    # Phase 2: somente SplashActivity é MAIN/LAUNCHER.
     x=read(manifest)
-    oldfilter='''        <intent-filter>\n            <action android:name="android.intent.action.MAIN" />\n            <category android:name="android.intent.category.LAUNCHER" />\n        </intent-filter>'''
-    if oldfilter in x: x=x.replace(oldfilter,"",1)
-    oldmain='''    <activity\n        android:name=".launcher.MainActivity"\n        android:screenOrientation="portrait"\n        android:theme="@style/Theme.AppCompat.NoActionBar"\n        android:windowSoftInputMode="adjustNothing">\n    </activity>'''
-    newmain='''    <activity\n        android:name=".launcher.MainActivity"\n        android:screenOrientation="portrait"\n        android:theme="@style/Theme.AppCompat.NoActionBar"\n        android:windowSoftInputMode="adjustNothing"\n        android:exported="true">\n        <intent-filter>\n            <action android:name="android.intent.action.MAIN" />\n            <category android:name="android.intent.category.LAUNCHER" />\n        </intent-filter>\n    </activity>'''
-    if oldmain in x: x=x.replace(oldmain,newmain,1)
-    elif 'android:name=".launcher.MainActivity"' not in x: die("MainActivity não encontrada")
+    launcher_filter=re.compile(
+        r"\s*<intent-filter>\s*"
+        r"<action\s+android:name=\"android\.intent\.action\.MAIN\"\s*/>\s*"
+        r"<category\s+android:name=\"android\.intent\.category\.LAUNCHER\"\s*/>\s*"
+        r"</intent-filter>", re.S)
+    x=launcher_filter.sub("",x)
+
+    splash_re=re.compile(
+        r'(<activity\s+[^>]*android:name="\.launcher\.SplashActivity"[^>]*>)(.*?)(</activity>)',
+        re.S)
+    sm=splash_re.search(x)
+    if not sm: die("SplashActivity não encontrada no manifest")
+
+    opening=sm.group(1)
+    if 'android:exported=' in opening:
+        opening=re.sub(r'android:exported="[^"]*"','android:exported="true"',opening)
+    else:
+        opening=opening[:-1]+'\n        android:exported="true">'
+    launch='''\n        <intent-filter>\n            <action android:name="android.intent.action.MAIN" />\n            <category android:name="android.intent.category.LAUNCHER" />\n        </intent-filter>\n    '''
+    replacement=opening+launch+sm.group(3)
+    x=x[:sm.start()]+replacement+x[sm.end():]
+
+    if 'android:name=".launcher.MainActivity"' not in x:
+        die("MainActivity não encontrada")
+
     if 'firebase_analytics_collection_enabled' not in x:
-        x=x.replace('        android:windowSoftInputMode="adjustNothing">\n\n        <provider', '        android:windowSoftInputMode="adjustNothing">\n\n        <!-- Phase 1: não enviar telemetria/crashes para o projeto Firebase upstream. -->\n        <meta-data\n            android:name="firebase_analytics_collection_enabled"\n            android:value="false" />\n        <meta-data\n            android:name="firebase_crashlytics_collection_enabled"\n            android:value="false" />\n\n        <provider', 1)
+        x=x.replace(
+            '        android:windowSoftInputMode="adjustNothing">\n\n        <provider',
+            '        android:windowSoftInputMode="adjustNothing">\n\n'
+            '        <!-- ARL: não enviar telemetria/crashes ao projeto Firebase upstream. -->\n'
+            '        <meta-data\n'
+            '            android:name="firebase_analytics_collection_enabled"\n'
+            '            android:value="false" />\n'
+            '        <meta-data\n'
+            '            android:name="firebase_crashlytics_collection_enabled"\n'
+            '            android:value="false" />\n\n'
+            '        <provider',1)
     write(manifest,x)
 
     st=read(strings).replace('<string name="app_name">SA-MP Mobile</string>',
@@ -102,12 +126,17 @@ def main():
         ii=ii.replace('name = Nick_Name','name = Nick_Name\nversion = 0.3.7-R3')
     write(ini,ii)
 
+    # Overlay ARL: launcher, updater, splash, layouts e arte.
     for src in overlay.rglob("*"):
         if src.is_file():
-            dst=r/src.relative_to(overlay); dst.parent.mkdir(parents=True,exist_ok=True)
+            dst=r/src.relative_to(overlay)
+            dst.parent.mkdir(parents=True,exist_ok=True)
             shutil.copy2(src,dst)
 
     mm=read(maincpp); gg=read(gradle); xx=read(manifest); rr=read(rootgradle)
+    splash_block=re.search(
+        r'<activity\s+[^>]*android:name="\.launcher\.SplashActivity"[^>]*>.*?</activity>',
+        xx,re.S)
     checks=[
       "\t\tReadSettingFile();" in mm,
       "pSettings->Get().szHost" in mm,
@@ -115,14 +144,17 @@ def main():
       'new CNetGame("94.23.168.153", 2305' not in mm,
       'applicationId "com.samp.mobile"' in gg,
       'android:name=".launcher.MainActivity"' in xx,
-      "android.intent.category.LAUNCHER" in xx,
+      splash_block is not None and "android.intent.category.LAUNCHER" in splash_block.group(0),
+      xx.count("android.intent.category.LAUNCHER") == 1,
       "mint.splunk.com" not in rr,
       "com.github.amitshekhariitbhu:PRDownloader:1.0.1" not in gg,
-      "com.github.amitshekhariitbhu:PRDownloader:1.0.2" in gg
+      "com.github.amitshekhariitbhu:PRDownloader:1.0.2" in gg,
+      (r/"app/src/main/res/drawable/arl_splash_banner.jpg").exists(),
+      (r/"app/src/main/java/com/samp/mobile/launcher/ArlDataManager.java").exists()
     ]
     if not all(checks): die("auditoria pós-patch falhou")
-    print("[ARL PHASE1] OK -> "+HOST+":"+PORT)
-    print("[ARL PHASE1] Maven morto removido; PRDownloader atualizado para 1.0.2")
-    print("[ARL PHASE1] próximo: ./gradlew assembleDebug")
+    print("[ARL PATCH] OK -> "+HOST+":"+PORT)
+    print("[ARL PATCH] Phase 2 DATA updater + splash ARL aplicados")
+    print("[ARL PATCH] próximo: ./gradlew assembleDebug")
 
 if __name__=="__main__": main()
