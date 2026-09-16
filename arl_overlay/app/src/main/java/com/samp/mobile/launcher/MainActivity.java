@@ -41,12 +41,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean dataBusy = false;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    /*
-     * Compatibility surface for the original launcher fragments/adapters that are
-     * still part of the upstream source set. The ARL launcher does not use the old
-     * server-browser UI, but javac still compiles those classes and they reference
-     * these members on MainActivity.
-     */
+    /* Compatibility surface for original upstream fragments/adapters. */
     public static ArrayList<SAMPServerInfo> mServersList = new ArrayList<>();
     public static ArrayList<SAMPServerInfo> mFavoriteServersList = new ArrayList<>();
 
@@ -76,6 +71,7 @@ public class MainActivity extends AppCompatActivity {
         status.setText("CONSULTANDO SERVIDOR...");
         dataStatus.setText("VERIFICANDO DATA...");
         dataProgress.setVisibility(View.GONE);
+        playButton.setEnabled(false);
 
         ArlRemoteConfig.refresh(this, () -> {
             endpoint.setText(ArlRemoteConfig.host() + ":" + ArlRemoteConfig.port());
@@ -105,10 +101,24 @@ public class MainActivity extends AppCompatActivity {
     private void refreshDataState() {
         if(dataBusy) return;
 
-        if(!ArlDataManager.isConfigured()) {
-            dataStatus.setText("DATA LOCAL • PACOTE REMOTO AINDA NÃO CONFIGURADO");
+        if(!ArlRemoteConfig.hasDataRelease()) {
+            dataStatus.setText("DATA LOCAL • PACOTE REMOTO AINDA NÃO PUBLICADO");
             repairButton.setEnabled(false);
             if(!ArlRemoteConfig.maintenance()) playButton.setEnabled(true);
+            return;
+        }
+
+        if(!ArlRemoteConfig.dataManifestReady()) {
+            dataStatus.setText("MANIFESTO DA DATA INDISPONÍVEL");
+            repairButton.setEnabled(false);
+            playButton.setEnabled(false);
+            return;
+        }
+
+        if(!ArlDataManager.isConfigured()) {
+            dataStatus.setText("CONFIGURAÇÃO DA DATA INVÁLIDA");
+            repairButton.setEnabled(false);
+            playButton.setEnabled(false);
             return;
         }
 
@@ -120,7 +130,7 @@ public class MainActivity extends AppCompatActivity {
             playButton.setEnabled(false);
         } else {
             String installed = ArlDataManager.installedVersion(this);
-            dataStatus.setText("DATA ATUALIZADA" +
+            dataStatus.setText("DATA VERIFICADA" +
                     (installed.isEmpty() ? "" : " • " + installed));
             if(!ArlRemoteConfig.maintenance()) playButton.setEnabled(true);
         }
@@ -128,6 +138,14 @@ public class MainActivity extends AppCompatActivity {
 
     private void beginRepair(boolean force) {
         if(dataBusy) return;
+
+        if(ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
+            Toast.makeText(this,
+                    "Não foi possível carregar o manifesto da DATA. Verifique a internet e reabra o launcher.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
         if(!ArlDataManager.isConfigured()) {
             Toast.makeText(this,
                     "O pacote DATA ainda não está configurado no launcher.json.",
@@ -155,16 +173,15 @@ public class MainActivity extends AppCompatActivity {
 
             @Override public void onComplete(boolean success, String message) {
                 dataBusy = false;
-                repairButton.setEnabled(true);
                 dataProgress.setVisibility(View.GONE);
 
                 if(success) {
                     refreshDataState();
                     Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                 } else {
+                    repairButton.setEnabled(ArlRemoteConfig.dataManifestReady());
                     dataStatus.setText("FALHA NA DATA • TOQUE EM REPARAR");
-                    playButton.setEnabled(!ArlDataManager.requiresRepair(MainActivity.this)
-                            && !ArlRemoteConfig.maintenance());
+                    playButton.setEnabled(false);
                     Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                 }
             }
@@ -179,6 +196,13 @@ public class MainActivity extends AppCompatActivity {
 
         if(ArlRemoteConfig.maintenance()) {
             Toast.makeText(this, "Servidor em manutenção.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if(ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
+            Toast.makeText(this,
+                    "Não foi possível verificar a integridade da DATA do ARL.",
+                    Toast.LENGTH_LONG).show();
             return;
         }
 
