@@ -5,12 +5,12 @@
     "port": 7777
   },
   "app": {
-    "latestVersionCode": 106,
-    "minVersionCode": 106,
-    "versionName": "1.0.0",
-    "apkUrl": "",
-    "sha256": "",
-    "bytes": 0,
+    "latestVersionCode": 107,
+    "minVersionCode": 107,
+    "versionName": "1.0.1",
+    "apkUrl": "https://github.com/gunikee1508/ARL-Android/releases/download/android-v1.0.1-c107/Amazing-Real-Life-1.0.1.apk",
+    "sha256": "6e74c7a784fe2ef2cf148223f39621ccc57382c90d8cb7a450fa341ee420018d",
+    "bytes": 62589282,
     "mandatory": false
   },
   "client": {

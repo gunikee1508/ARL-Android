@@ -2,11 +2,24 @@
   "schema": 1,
   "signingCertSha256": "a1d694751beddc6239d4fb54c40217421cb79d171d6a5e8bb87c44fb917ff50d",
   "active": {
-    "app": null,
+    "app": 107,
     "data": null
   },
   "history": {
-    "app": [],
+    "app": [
+      {
+        "versionCode": 107,
+        "versionName": "1.0.1",
+        "tag": "android-v1.0.1-c107",
+        "url": "https://github.com/gunikee1508/ARL-Android/releases/download/android-v1.0.1-c107/Amazing-Real-Life-1.0.1.apk",
+        "sha256": "6e74c7a784fe2ef2cf148223f39621ccc57382c90d8cb7a450fa341ee420018d",
+        "bytes": 62589282,
+        "minVersionCode": 107,
+        "mandatory": false,
+        "signingCertSha256": "a1d694751beddc6239d4fb54c40217421cb79d171d6a5e8bb87c44fb917ff50d",
+        "recordedAt": "2026-09-16T18:42:15Z"
+      }
+    ],
     "data": []
   }
 }
