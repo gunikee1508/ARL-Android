@@ -19,10 +19,11 @@ def main():
     maincpp=r/"app/src/main/cpp/samp/main.cpp"
     manifest=r/"app/src/main/AndroidManifest.xml"
     gradle=r/"app/build.gradle"
+    rootgradle=r/"build.gradle"
     strings=r/"app/src/main/res/values/strings.xml"
     ini=r/"app/src/main/assets/settings.ini"
     settingscpp=r/"app/src/main/cpp/samp/settings.cpp"
-    req=[maincpp,manifest,gradle,strings,ini,settingscpp]
+    req=[maincpp,manifest,gradle,rootgradle,strings,ini,settingscpp]
     miss=[str(x.relative_to(r)) for x in req if not x.exists()]
     if miss: die("arquivos ausentes: "+", ".join(miss))
 
@@ -40,12 +41,27 @@ def main():
             q=b/p.relative_to(r); q.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,q)
     print("[ARL] backup:",b)
 
+    # Native: settings.ini passa a controlar o endpoint real da sessão.
     m=read(maincpp).replace("\t\t//ReadSettingFile();","\t\tReadSettingFile();",1)
     m=m.replace(
       'pNetGame = new CNetGame("94.23.168.153", 2305, pSettings->Get().szNickName, pSettings->Get().szPassword);',
       'pNetGame = new CNetGame(pSettings->Get().szHost, pSettings->Get().iPort, pSettings->Get().szNickName, pSettings->Get().szPassword);',1)
     write(maincpp,m)
 
+    # Remove repositório morto do upstream. Ele quebra a resolução de dependências
+    # antes mesmo do CMake por UnknownHost mint.splunk.com.
+    rg=read(rootgradle)
+    rg2=re.sub(
+        r"(?m)^\s*maven\s*\{\s*url\s*['\"]https://mint\.splunk\.com/gradle/?['\"]\s*\}\s*$\n?",
+        "",
+        rg
+    )
+    if rg2 == rg and "mint.splunk.com" in rg:
+        die("repositório Splunk encontrado em formato inesperado")
+    rg=rg2
+    write(rootgradle,rg)
+
+    # App build: preserva package/JNI nesta fase e remove keystore upstream.
     g=read(gradle)
     if 'applicationId "com.samp.mobile"' not in g:
         die("applicationId upstream inesperado; Phase 1 BUILD-SAFE exige com.samp.mobile")
@@ -82,7 +98,7 @@ def main():
             dst=r/src.relative_to(overlay); dst.parent.mkdir(parents=True,exist_ok=True)
             shutil.copy2(src,dst)
 
-    mm=read(maincpp); gg=read(gradle); xx=read(manifest)
+    mm=read(maincpp); gg=read(gradle); xx=read(manifest); rr=read(rootgradle)
     checks=[
       "\t\tReadSettingFile();" in mm,
       "pSettings->Get().szHost" in mm,
@@ -90,10 +106,12 @@ def main():
       'new CNetGame("94.23.168.153", 2305' not in mm,
       'applicationId "com.samp.mobile"' in gg,
       'android:name=".launcher.MainActivity"' in xx,
-      "android.intent.category.LAUNCHER" in xx
+      "android.intent.category.LAUNCHER" in xx,
+      "mint.splunk.com" not in rr
     ]
     if not all(checks): die("auditoria pós-patch falhou")
     print("[ARL PHASE1] OK -> "+HOST+":"+PORT)
+    print("[ARL PHASE1] repositório Maven morto mint.splunk.com removido")
     print("[ARL PHASE1] próximo: ./gradlew assembleDebug")
 
 if __name__=="__main__": main()
