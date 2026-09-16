@@ -1,0 +1,171 @@
+name: Publish ARL Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: 'Android versionCode (must increase)'
+        required: true
+        type: number
+      version_name:
+        description: 'Public version name (example: 1.0.0)'
+        required: true
+        type: string
+      min_version_code:
+        description: 'Oldest launcher version allowed to play'
+        required: true
+        type: number
+      mandatory:
+        description: 'Force this launcher update before playing'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: arl-apk-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ARL_VERSION_CODE: ${{ inputs.version_code }}
+      ARL_VERSION_NAME: ${{ inputs.version_name }}
+      ARL_KEYSTORE_PASSWORD: ${{ secrets.ARL_KEYSTORE_PASSWORD }}
+      ARL_KEY_ALIAS: ${{ secrets.ARL_KEY_ALIAS }}
+      ARL_KEY_PASSWORD: ${{ secrets.ARL_KEY_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout ARL repository
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate release inputs and signing secrets
+        shell: bash
+        env:
+          ARL_KEYSTORE_BASE64: ${{ secrets.ARL_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test "$ARL_VERSION_CODE" -gt 0
+          test -n "$ARL_VERSION_NAME"
+          test "${{ inputs.min_version_code }}" -gt 0
+          test "${{ inputs.min_version_code }}" -le "$ARL_VERSION_CODE"
+          test -n "$ARL_KEYSTORE_BASE64"
+          test -n "$ARL_KEYSTORE_PASSWORD"
+          test -n "$ARL_KEY_ALIAS"
+          test -n "$ARL_KEY_PASSWORD"
+          printf '%s' "$ARL_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/arl-release.jks"
+          test -s "$RUNNER_TEMP/arl-release.jks"
+          echo "ARL_KEYSTORE_PATH=$RUNNER_TEMP/arl-release.jks" >> "$GITHUB_ENV"
+
+      - name: Checkout SAMP-Mobile GTA-2.10
+        uses: actions/checkout@v5
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/**/*.gradle*
+
+      - name: Install Android components
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.2.11394342" \
+            "cmake;3.22.1"
+
+      - name: Apply ARL launcher overlay
+        run: python3 apply_arl_phase1.py upstream
+
+      - name: Apply upstream native build fixes
+        run: python3 fix_upstream_native.py upstream
+
+      - name: Build signed release APK
+        working-directory: upstream
+        run: |
+          chmod +x gradlew
+          ./gradlew --stacktrace --no-daemon assembleRelease
+
+      - name: Collect and verify signed APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$(find upstream/app/build/outputs/apk/release -type f -name '*.apk' -print -quit)"
+          test -n "$SRC"
+          mkdir -p release-output
+          SAFE_NAME="$(printf '%s' "$ARL_VERSION_NAME" | tr -c 'A-Za-z0-9._-' '-')"
+          APK="release-output/Amazing-Real-Life-${SAFE_NAME}.apk"
+          cp "$SRC" "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$APK"
+          sha256sum "$APK" | tee release-output/SHA256SUMS.txt
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      - name: Refuse to overwrite an existing APK release
+        shell: bash
+        run: |
+          TAG="android-v${ARL_VERSION_NAME}-c${ARL_VERSION_CODE}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; APK releases are immutable."
+            exit 1
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Publish immutable signed APK release
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" "$APK_PATH" release-output/SHA256SUMS.txt \
+            --title "Amazing Real Life Android ${ARL_VERSION_NAME}" \
+            --notes "Signed ARL Android launcher. versionCode ${ARL_VERSION_CODE}."
+
+      - name: Activate launcher APK update channel
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "${{ inputs.mandatory }}" = "true" ]; then EXTRA="--mandatory"; fi
+          python3 tools/activate_arl_app.py \
+            --launcher launcher.json \
+            --apk "$APK_PATH" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --version-code "$ARL_VERSION_CODE" \
+            --version-name "$ARL_VERSION_NAME" \
+            --min-version-code "${{ inputs.min_version_code }}" \
+            $EXTRA
+          python3 -m json.tool launcher.json >/dev/null
+
+      - name: Commit active APK pointer
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add launcher.json
+          git commit -m "Activate ARL Android ${ARL_VERSION_NAME} (${ARL_VERSION_CODE})"
+          git push origin HEAD:main
+
+      - name: Upload release audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-APK-${{ inputs.version_name }}-audit
+          path: |
+            release-output/SHA256SUMS.txt
+            launcher.json
+          if-no-files-found: error
