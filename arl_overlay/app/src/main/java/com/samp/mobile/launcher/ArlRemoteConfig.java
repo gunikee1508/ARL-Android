@@ -14,7 +14,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Remote launcher configuration + external DATA manifest loader. */
+/** Remote launcher configuration + DATA manifest + APK update metadata. */
 public final class ArlRemoteConfig {
     public interface Callback { void onReady(); }
 
@@ -38,6 +38,15 @@ public final class ArlRemoteConfig {
     private static volatile int port = ArlConfig.DEFAULT_PORT;
     private static volatile boolean maintenance = false;
 
+    private static volatile int appLatestVersionCode = -1;
+    private static volatile int appMinVersionCode = -1;
+    private static volatile String appVersionName = "";
+    private static volatile String appApkUrl = "";
+    private static volatile String appSha256 = "";
+    private static volatile long appBytes = -1L;
+    private static volatile boolean appMandatory = false;
+    private static volatile boolean appReleaseDeclared = false;
+
     private static volatile String dataVersion = "";
     private static volatile String dataUrl = "";
     private static volatile String dataSha256 = "";
@@ -52,6 +61,16 @@ public final class ArlRemoteConfig {
     public static String host(){ return host; }
     public static int port(){ return port; }
     public static boolean maintenance(){ return maintenance; }
+
+    public static int appLatestVersionCode(){ return appLatestVersionCode; }
+    public static int appMinVersionCode(){ return appMinVersionCode; }
+    public static String appVersionName(){ return appVersionName; }
+    public static String appApkUrl(){ return appApkUrl; }
+    public static String appSha256(){ return appSha256; }
+    public static long appBytes(){ return appBytes; }
+    public static boolean appMandatory(){ return appMandatory; }
+    public static boolean hasAppRelease(){ return appReleaseDeclared; }
+
     public static String dataVersion(){ return dataVersion; }
     public static String dataUrl(){ return dataUrl; }
     public static String dataSha256(){ return dataSha256; }
@@ -65,6 +84,7 @@ public final class ArlRemoteConfig {
         final Context app = context.getApplicationContext();
         dataManifestReady = false;
         dataFiles = Collections.emptyList();
+        appReleaseDeclared = false;
 
         StringRequest req = new StringRequest(ArlConfig.REMOTE_CONFIG,
             new Response.Listener<String>() {
@@ -80,6 +100,20 @@ public final class ArlRemoteConfig {
                             int p = server.optInt("port", port);
                             if(!h.isEmpty()) host = h;
                             if(p > 0 && p <= 65535) port = p;
+                        }
+
+                        JSONObject appNode = root.optJSONObject("app");
+                        if(appNode != null) {
+                            appLatestVersionCode = appNode.optInt("latestVersionCode", -1);
+                            appMinVersionCode = appNode.optInt("minVersionCode", -1);
+                            appVersionName = appNode.optString("versionName", "").trim();
+                            appApkUrl = appNode.optString("apkUrl", "").trim();
+                            appSha256 = appNode.optString("sha256", "").trim().toLowerCase();
+                            appBytes = appNode.optLong("bytes", -1L);
+                            appMandatory = appNode.optBoolean("mandatory", false);
+                            appReleaseDeclared = appLatestVersionCode > 0
+                                    && validHttp(appApkUrl)
+                                    && appSha256.matches("(?i)[0-9a-f]{64}");
                         }
 
                         JSONObject client = root.optJSONObject("client");
@@ -114,13 +148,11 @@ public final class ArlRemoteConfig {
                         }
                     } catch(Exception ignored) {
                         dataReleaseDeclared = false;
+                        appReleaseDeclared = false;
                     }
 
-                    if(fetchExternalManifest) {
-                        fetchManifest(app, cb);
-                    } else {
-                        cb.onReady();
-                    }
+                    if(fetchExternalManifest) fetchManifest(app, cb);
+                    else cb.onReady();
                 }
             },
             new Response.ErrorListener() {
@@ -178,7 +210,6 @@ public final class ArlRemoteConfig {
             }
         }
 
-        // Compatibility with the early Phase-2 string-only list.
         if(next.isEmpty()) {
             JSONArray required = src.optJSONArray("requiredFiles");
             if(required != null) {
