@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: arl-data-release
+  group: arl-production-state
   cancel-in-progress: false
 
 jobs:
@@ -177,6 +177,14 @@ jobs:
           gh release create "$TAG" "$ZIP" "$MANIFEST" "$META" \
             --title "ARL Android DATA v${VERSION}" \
             --notes "Immutable ARL-owned Android overlay v${VERSION}. Base GTA SA files are not bundled; the launcher imports them from the player's legitimate copy. Package and per-file SHA-256 verification enabled."
+
+      - name: Sync latest main before activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git rebase origin/main
+          python3 tools/production_state.py validate
 
       - name: Activate DATA version in launcher.json
         shell: bash
