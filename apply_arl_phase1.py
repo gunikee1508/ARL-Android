@@ -69,6 +69,15 @@ def main():
     if ss!=-1 and ee!=-1:
         g=g[:ss]+g[ee:]
     g=g.replace("            signingConfig signingConfigs.release\n","")
+
+    # O upstream aponta para PRDownloader 1.0.1, cujo build do JitPack está quebrado.
+    # O próprio projeto upstream da biblioteca publica atualmente 1.0.2 como coordenada.
+    if "com.github.amitshekhariitbhu:PRDownloader:1.0.1" in g:
+        g=g.replace(
+            "com.github.amitshekhariitbhu:PRDownloader:1.0.1",
+            "com.github.amitshekhariitbhu:PRDownloader:1.0.2",
+            1
+        )
     write(gradle,g)
 
     x=read(manifest)
@@ -107,11 +116,13 @@ def main():
       'applicationId "com.samp.mobile"' in gg,
       'android:name=".launcher.MainActivity"' in xx,
       "android.intent.category.LAUNCHER" in xx,
-      "mint.splunk.com" not in rr
+      "mint.splunk.com" not in rr,
+      "com.github.amitshekhariitbhu:PRDownloader:1.0.1" not in gg,
+      "com.github.amitshekhariitbhu:PRDownloader:1.0.2" in gg
     ]
     if not all(checks): die("auditoria pós-patch falhou")
     print("[ARL PHASE1] OK -> "+HOST+":"+PORT)
-    print("[ARL PHASE1] repositório Maven morto mint.splunk.com removido")
+    print("[ARL PHASE1] Maven morto removido; PRDownloader atualizado para 1.0.2")
     print("[ARL PHASE1] próximo: ./gradlew assembleDebug")
 
 if __name__=="__main__": main()
