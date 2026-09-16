@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#050608">
+
+    <ImageView
+        android:id="@+id/arl_splash_art"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:adjustViewBounds="true"
+        android:contentDescription="Amazing Real Life"
+        android:scaleType="fitCenter"
+        android:src="@drawable/arl_splash_banner" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:paddingBottom="42dp">
+
+        <ProgressBar
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:indeterminate="true"
+            android:indeterminateTint="#D8BB57" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:letterSpacing="0.18"
+            android:text="CARREGANDO..."
+            android:textColor="#D7DCE1"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</FrameLayout>
