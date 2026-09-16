@@ -2,40 +2,87 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#050608">
-
-    <ImageView
-        android:id="@+id/arl_splash_art"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:adjustViewBounds="true"
-        android:contentDescription="Amazing Real Life"
-        android:scaleType="fitCenter"
-        android:src="@drawable/arl_splash_banner" />
+    android:background="@drawable/arl_screen_bg">
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
+        android:layout_height="match_parent"
         android:gravity="center"
         android:orientation="vertical"
-        android:paddingBottom="42dp">
+        android:paddingLeft="28dp"
+        android:paddingRight="28dp">
 
-        <ProgressBar
-            android:layout_width="34dp"
-            android:layout_height="34dp"
-            android:indeterminate="true"
-            android:indeterminateTint="#D8BB57" />
+        <ImageView
+            android:id="@+id/arl_splash_art"
+            android:layout_width="match_parent"
+            android:layout_height="210dp"
+            android:adjustViewBounds="true"
+            android:contentDescription="Amazing Real Life"
+            android:scaleType="fitCenter"
+            android:src="@drawable/arl_splash_banner" />
 
         <TextView
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:letterSpacing="0.18"
-            android:text="CARREGANDO..."
-            android:textColor="#D7DCE1"
-            android:textSize="11sp"
+            android:layout_marginTop="4dp"
+            android:gravity="center"
+            android:letterSpacing="0.15"
+            android:text="AMAZING REAL LIFE"
+            android:textColor="#E2C96E"
+            android:textSize="20sp"
             android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:gravity="center"
+            android:letterSpacing="0.09"
+            android:text="RPG • EXPERIÊNCIA MOBILE OFICIAL"
+            android:textColor="#77808A"
+            android:textSize="9sp" />
+
+        <ProgressBar
+            android:id="@+id/arl_splash_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="220dp"
+            android:layout_height="4dp"
+            android:layout_marginTop="34dp"
+            android:indeterminate="true"
+            android:indeterminateTint="#D8BB57"
+            android:progressBackgroundTint="#252B31" />
+
+        <TextView
+            android:id="@+id/arl_splash_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center"
+            android:letterSpacing="0.10"
+            android:text="INICIALIZANDO CLIENTE ARL..."
+            android:textColor="#D5DADE"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/arl_splash_detail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center"
+            android:text="Verificando a experiência antes de entrar no servidor"
+            android:textColor="#59616A"
+            android:textSize="9sp" />
     </LinearLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="24dp"
+        android:gravity="center"
+        android:letterSpacing="0.12"
+        android:text="ARL MOBILE • PHASE 9"
+        android:textColor="#3E464E"
+        android:textSize="8sp" />
 </FrameLayout>
