@@ -1,0 +1,132 @@
+name: ARL Android Production Controls
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Production control action'
+        required: true
+        type: choice
+        options:
+          - maintenance-on
+          - maintenance-off
+          - data-promote
+          - app-policy
+      data_version:
+        description: 'Existing DATA version to promote/rollback to (data-promote only)'
+        required: false
+        type: string
+      min_version_code:
+        description: 'Minimum allowed launcher versionCode (app-policy only)'
+        required: false
+        default: '106'
+        type: string
+      mandatory:
+        description: 'Force APK update before play (app-policy only)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: arl-production-control
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ACTION: ${{ inputs.action }}
+      DATA_VERSION: ${{ inputs.data_version }}
+      MIN_VERSION_CODE: ${{ inputs.min_version_code }}
+      MANDATORY: ${{ inputs.mandatory }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate production state before change
+        run: python3 tools/production_state.py validate
+
+      - name: Apply production control
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            maintenance-on)
+              python3 tools/production_state.py maintenance --value on
+              ;;
+            maintenance-off)
+              python3 tools/production_state.py maintenance --value off
+              ;;
+            data-promote)
+              test -n "$DATA_VERSION"
+              python3 tools/production_state.py promote-data --version "$DATA_VERSION"
+              ;;
+            app-policy)
+              python3 - <<'PY'
+          import json
+          s=json.load(open('production-state.json', encoding='utf-8'))
+          if s.get('active',{}).get('app') is None:
+              raise SystemExit('No signed production APK has been activated yet')
+          PY
+              if [ "$MANDATORY" = "true" ]; then FLAG=true; else FLAG=false; fi
+              python3 tools/production_state.py app-policy \
+                --min-version-code "$MIN_VERSION_CODE" \
+                --mandatory "$FLAG"
+              ;;
+            *)
+              echo "Unknown action: $ACTION" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Validate production state after change
+        run: python3 tools/production_state.py validate
+
+      - name: Health-check promoted DATA
+        if: ${{ inputs.action == 'data-promote' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          readarray -t URLS < <(python3 - <<'PY'
+          import json
+          d=json.load(open('launcher.json', encoding='utf-8'))['client']['data']
+          print(d['url'])
+          print(d['manifestUrl'])
+          PY
+          )
+          for url in "${URLS[@]}"; do
+            curl --fail --silent --show-error --location --retry 4 \
+              --connect-timeout 15 --max-time 60 --range 0-0 \
+              "$url" -o /dev/null
+          done
+
+      - name: Commit production control
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- launcher.json production-state.json; then
+            echo "No production state change required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add launcher.json production-state.json
+          git commit -m "ARL production control: ${ACTION}${DATA_VERSION:+ ${DATA_VERSION}}"
+          git push origin HEAD:main
+
+      - name: Upload production control audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-production-control-${{ github.run_number }}
+          path: |
+            launcher.json
+            production-state.json
+          if-no-files-found: error
