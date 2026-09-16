@@ -8,6 +8,7 @@ on:
       - 'launcher.json'
       - 'tools/**'
       - '.github/workflows/publish-arl-data.yml'
+      - '.github/workflows/publish-arl-apk.yml'
       - 'docs/**'
       - 'README.md'
 
@@ -24,7 +25,7 @@ jobs:
       - name: Checkout ARL patch repo
         uses: actions/checkout@v5
 
-      - name: Self-test DATA release tooling
+      - name: Self-test release tooling
         shell: bash
         run: |
           set -euo pipefail
@@ -45,6 +46,16 @@ jobs:
             --metadata "$META" \
             --repository "$GITHUB_REPOSITORY" \
             --tag data-vci-test
+          printf 'FAKE_APK_FOR_METADATA_TEST' > "$TESTROOT/Amazing-Real-Life-ci.apk"
+          python3 tools/activate_arl_app.py \
+            --launcher "$TESTROOT/launcher.json" \
+            --apk "$TESTROOT/Amazing-Real-Life-ci.apk" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag android-vci-test-c999 \
+            --version-code 999 \
+            --version-name ci-test \
+            --min-version-code 998 \
+            --mandatory
           python3 - "$MANIFEST" "$TESTROOT/launcher.json" <<'PY'
           import json, sys
           m=json.load(open(sys.argv[1], encoding='utf-8'))
@@ -55,7 +66,13 @@ jobs:
           assert d['version']=='ci-test'
           assert len(d['sha256'])==64
           assert d['manifestUrl'].endswith('.manifest.json')
-          print('DATA tooling self-test OK')
+          a=l['app']
+          assert a['latestVersionCode']==999
+          assert a['minVersionCode']==998
+          assert a['mandatory'] is True
+          assert len(a['sha256'])==64
+          assert a['apkUrl'].endswith('.apk')
+          print('ARL release tooling self-test OK')
           PY
 
       - name: Checkout SAMP-Mobile GTA-2.10
@@ -110,7 +127,11 @@ jobs:
           grep -q 'pSettings->Get().iPort' upstream/app/src/main/cpp/samp/main.cpp
           ! grep -q 'new CNetGame("94.23.168.153", 2305' upstream/app/src/main/cpp/samp/main.cpp
           grep -q 'Amazing Real Life' upstream/app/src/main/res/values/strings.xml
+          grep -q 'versionCode 106' upstream/app/build.gradle
+          grep -q 'versionName "1.0.0"' upstream/app/build.gradle
           grep -q 'dataManifestReady' upstream/app/src/main/java/com/samp/mobile/launcher/ArlRemoteConfig.java
+          grep -q 'appLatestVersionCode' upstream/app/src/main/java/com/samp/mobile/launcher/ArlRemoteConfig.java
+          test -f upstream/app/src/main/java/com/samp/mobile/launcher/ArlAppUpdateManager.java
           grep -q 'samp_widgets/playertablist.h' upstream/app/src/main/cpp/samp/gui/gui.h
           ! grep -q 'samp_widgets/playerTabList.h' upstream/app/src/main/cpp/samp/gui/gui.h
 
