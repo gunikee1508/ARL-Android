@@ -1,23 +1,34 @@
 package com.samp.mobile.launcher;
 
+import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.fragment.app.Fragment;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.samp.mobile.R;
 import com.samp.mobile.game.SAMP;
 import com.samp.mobile.launcher.config.Config;
+import com.samp.mobile.launcher.fragments.ServerPagesItemFragment;
+import com.samp.mobile.launcher.fragments.ServersFragment;
 import com.samp.mobile.launcher.util.ConfigValidator;
+import com.samp.mobile.launcher.util.SAMPServerInfo;
 import com.samp.mobile.launcher.util.SampQueryAPI;
+
 import org.ini4j.Wini;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -26,6 +37,15 @@ public class MainActivity extends AppCompatActivity {
     private TextView endpoint, status;
     private Button playButton;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+    /*
+     * Compatibility surface for the original launcher fragments/adapters that are
+     * still part of the upstream source set. The ARL launcher does not use the old
+     * server-browser UI, but javac still compiles those classes and they reference
+     * these members on MainActivity.
+     */
+    public static ArrayList<SAMPServerInfo> mServersList = new ArrayList<>();
+    public static ArrayList<SAMPServerInfo> mFavoriteServersList = new ArrayList<>();
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -118,6 +138,43 @@ public class MainActivity extends AppCompatActivity {
             final String out = result;
             runOnUiThread(() -> status.setText(out));
         });
+    }
+
+    public final ArrayList<SAMPServerInfo> getServerList() {
+        return mServersList;
+    }
+
+    public final ArrayList<SAMPServerInfo> getFavoriteServerList() {
+        return mFavoriteServersList;
+    }
+
+    public void refreshFavoriteServers() {
+        for (Fragment fragment : getSupportFragmentManager().getFragments()) {
+            if (!(fragment instanceof ServersFragment) || !fragment.isAdded()) continue;
+
+            for (Fragment child : fragment.getChildFragmentManager().getFragments()) {
+                if (!(child instanceof ServerPagesItemFragment)) continue;
+                if (((ServerPagesItemFragment) child).getPage() != 0 || child.getView() == null) continue;
+
+                RecyclerView view = child.getView().findViewById(R.id.server_recycler);
+                if (view == null || view.getAdapter() == null) continue;
+                view.post(() -> {
+                    RecyclerView.Adapter<?> adapter = view.getAdapter();
+                    if (adapter != null) adapter.notifyDataSetChanged();
+                });
+            }
+        }
+    }
+
+    public static void hideKeyboard(Activity activity) {
+        if (activity == null) return;
+        InputMethodManager inputManager = (InputMethodManager)
+                activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+        View focused = activity.getCurrentFocus();
+        if (inputManager != null && focused != null) {
+            inputManager.hideSoftInputFromWindow(
+                    focused.getWindowToken(), InputMethodManager.HIDE_NOT_ALWAYS);
+        }
     }
 
     private void open(String url) {
