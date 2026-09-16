@@ -1,0 +1,120 @@
+name: Phase 8 - Build Runtime APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase8-mobile-layer-runtime
+    paths:
+      - arl_overlay/app/src/main/cpp/samp/arl/**
+      - tools/patch_arl_brasil_runtime.py
+      - apply_arl_phase1.py
+      - fix_upstream_native.py
+      - .github/workflows/build-phase8-mobile-layer-apk.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ARL_VERSION_CODE: '108'
+      ARL_VERSION_NAME: '1.0.2-phase8'
+
+    steps:
+      - name: Checkout ARL patch repo
+        uses: actions/checkout@v5
+
+      - name: Checkout SAMP-Mobile GTA-2.10
+        uses: actions/checkout@v5
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/**/*.gradle*
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
+      - name: Install Android components
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.2.11394342" \
+            "cmake;3.22.1"
+
+      - name: Apply normal ARL overlay
+        run: python3 apply_arl_phase1.py upstream
+
+      - name: Wire Phase 8 native mobile layer
+        run: python3 tools/patch_arl_brasil_runtime.py upstream
+
+      - name: Apply upstream native build fixes
+        run: python3 fix_upstream_native.py upstream
+
+      - name: Verify Phase 8 invariants
+        shell: bash
+        run: |
+          test -f upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          test -f upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.h
+          grep -q '#include "arl/ArlBrasilLayer.h"' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'ArlBrasilLayer::InstallHooks();' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'ArlBrasilLayer::Tick();' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'CStreaming::AddImageToList(kImgRelative, true)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          grep -q 'TextureDatabaseRuntime::Load(kDbName, true, DF_UNC)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          grep -q 'versionCode 108' upstream/app/build.gradle
+          grep -q 'versionName "1.0.2-phase8"' upstream/app/build.gradle
+
+      - name: Make Gradle executable
+        run: chmod +x upstream/gradlew
+
+      - name: Build Phase 8 debug APK
+        working-directory: upstream
+        run: ./gradlew --stacktrace --no-daemon assembleDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          mkdir -p output
+          find upstream/app/build/outputs/apk -type f -name '*.apk' -print -exec cp {} output/ \;
+          test -n "$(find output -type f -name '*.apk' -print -quit)"
+          sha256sum output/*.apk | tee output/SHA256SUMS.txt
+          cat > output/PHASE8.txt <<'TXT'
+          Experimental Phase 8 build.
+          Native runtime understands the optional external layer:
+            arlbrasil/arlbrasil.img
+            texdb/arlbrasil/arlbrasil.txt
+            texdb/arlbrasil/src/*.png
+          Production 1.0.1 is not modified by this workflow.
+          TXT
+
+      - name: Upload Phase 8 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Android-phase8-runtime-debug
+          path: output/*
+          if-no-files-found: error
+          retention-days: 14
