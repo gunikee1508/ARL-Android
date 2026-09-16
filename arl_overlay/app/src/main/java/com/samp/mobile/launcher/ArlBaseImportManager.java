@@ -3,18 +3,20 @@ package com.samp.mobile.launcher;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
-
-import androidx.documentfile.provider.DocumentFile;
+import android.provider.DocumentsContract;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -51,10 +53,6 @@ public final class ArlBaseImportManager {
 
     private ArlBaseImportManager() {}
 
-    /**
-     * Existing installations from earlier ARL builds are auto-detected even if
-     * the Phase-6 preference marker has not been written yet.
-     */
     public static boolean isBaseReady(Context context) {
         File root = context.getExternalFilesDir(null);
         if (root == null) return false;
@@ -78,12 +76,13 @@ public final class ArlBaseImportManager {
         new Thread(() -> {
             try {
                 if (selectedTree == null) throw new IllegalArgumentException("pasta não selecionada");
-                DocumentFile selected = DocumentFile.fromTreeUri(app, selectedTree);
-                if (selected == null || !selected.exists() || !selected.isDirectory())
+                ContentResolver resolver = app.getContentResolver();
+                String selectedId = DocumentsContract.getTreeDocumentId(selectedTree);
+                if (selectedId == null || selectedId.trim().isEmpty())
                     throw new IllegalArgumentException("não foi possível abrir a pasta selecionada");
 
-                DocumentFile gameRoot = findGameRoot(selected);
-                if (gameRoot == null) {
+                String gameRootId = findGameRoot(resolver, selectedTree, selectedId);
+                if (gameRootId == null) {
                     complete(listener, false,
                             "Essa pasta não parece conter a DATA do GTA SA. Selecione a pasta 'files' da sua instalação/cópia legítima do jogo.");
                     return;
@@ -93,13 +92,13 @@ public final class ArlBaseImportManager {
                 if (destination == null) throw new IllegalStateException("armazenamento indisponível");
 
                 state(listener, "LENDO BASE GTA SA...");
-                Scan scan = scanTree(gameRoot, 0);
+                Scan scan = scanTree(resolver, selectedTree, gameRootId, 0);
                 if (scan.files <= 0 || scan.bytes <= 0)
                     throw new IllegalStateException("a pasta selecionada está vazia");
 
                 CopyStats copied = new CopyStats(scan.files, scan.bytes);
                 state(listener, "IMPORTANDO BASE GTA SA...");
-                copyTree(app.getContentResolver(), gameRoot, destination, copied, 0, listener);
+                copyTree(resolver, selectedTree, gameRootId, destination, copied, 0, listener);
 
                 if (!looksLikeInstalledBase(destination))
                     throw new IllegalStateException("estrutura mínima do GTA SA não foi encontrada após a importação");
@@ -119,104 +118,109 @@ public final class ArlBaseImportManager {
         }, "ARL-Base-Importer").start();
     }
 
-    private static DocumentFile findGameRoot(DocumentFile selected) {
-        if (looksLikeSourceRoot(selected)) return selected;
+    private static String findGameRoot(ContentResolver resolver, Uri treeUri, String selectedId) {
+        if (looksLikeSourceRoot(resolver, treeUri, selectedId)) return selectedId;
 
-        // Common backup layouts: <selected>/files or Android/data/<package>/files.
-        DocumentFile files = childDir(selected, "files");
-        if (files != null && looksLikeSourceRoot(files)) return files;
+        String files = childDirId(resolver, treeUri, selectedId, "files");
+        if (files != null && looksLikeSourceRoot(resolver, treeUri, files)) return files;
 
-        DocumentFile android = childDir(selected, "Android");
-        DocumentFile data = childDir(android, "data");
+        String android = childDirId(resolver, treeUri, selectedId, "Android");
+        String data = childDirId(resolver, treeUri, android, "data");
         if (data != null) {
-            DocumentFile rockstar = childDir(data, "com.rockstargames.gtasa");
-            DocumentFile rockstarFiles = childDir(rockstar, "files");
-            if (rockstarFiles != null && looksLikeSourceRoot(rockstarFiles)) return rockstarFiles;
+            String rockstar = childDirId(resolver, treeUri, data, "com.rockstargames.gtasa");
+            String rockstarFiles = childDirId(resolver, treeUri, rockstar, "files");
+            if (rockstarFiles != null && looksLikeSourceRoot(resolver, treeUri, rockstarFiles)) return rockstarFiles;
 
-            DocumentFile samp = childDir(data, "com.samp.mobile");
-            DocumentFile sampFiles = childDir(samp, "files");
-            if (sampFiles != null && looksLikeSourceRoot(sampFiles)) return sampFiles;
+            String samp = childDirId(resolver, treeUri, data, "com.samp.mobile");
+            String sampFiles = childDirId(resolver, treeUri, samp, "files");
+            if (sampFiles != null && looksLikeSourceRoot(resolver, treeUri, sampFiles)) return sampFiles;
         }
         return null;
     }
 
-    private static boolean looksLikeSourceRoot(DocumentFile root) {
-        if (root == null || !root.isDirectory()) return false;
-        boolean texdb = childDir(root, "texdb") != null;
-        boolean data = childDir(root, "data") != null;
-        boolean models = childDir(root, "models") != null;
-        boolean audio = childDir(root, "audio") != null;
-        boolean samp = childDir(root, "SAMP") != null || childDir(root, "samp") != null;
-        // GTA Android/SAMP packs vary by build. texdb plus any second game-data
-        // family is a strong enough signal without tying ARL to one pirated pack.
+    private static boolean looksLikeSourceRoot(ContentResolver resolver, Uri treeUri, String docId) {
+        if (docId == null) return false;
+        boolean texdb = childDirId(resolver, treeUri, docId, "texdb") != null;
+        boolean data = childDirId(resolver, treeUri, docId, "data") != null;
+        boolean models = childDirId(resolver, treeUri, docId, "models") != null;
+        boolean audio = childDirId(resolver, treeUri, docId, "audio") != null;
+        boolean samp = childDirId(resolver, treeUri, docId, "SAMP") != null;
         return texdb && (data || models || audio || samp);
     }
 
-    private static boolean looksLikeInstalledBase(File root) {
-        if (root == null || !root.isDirectory()) return false;
-        boolean texdb = dirExistsIgnoreCase(root, "texdb");
-        boolean data = dirExistsIgnoreCase(root, "data");
-        boolean models = dirExistsIgnoreCase(root, "models");
-        boolean audio = dirExistsIgnoreCase(root, "audio");
-        boolean samp = dirExistsIgnoreCase(root, "SAMP");
-        return texdb && (data || models || audio || samp);
-    }
-
-    private static boolean dirExistsIgnoreCase(File root, String name) {
-        File[] files = root.listFiles();
-        if (files == null) return false;
-        for (File file : files) {
-            if (file.isDirectory() && file.getName().equalsIgnoreCase(name)) return true;
-        }
-        return false;
-    }
-
-    private static DocumentFile childDir(DocumentFile root, String name) {
-        if (root == null || !root.isDirectory()) return null;
-        DocumentFile[] children;
-        try { children = root.listFiles(); }
-        catch (Exception e) { return null; }
-        for (DocumentFile child : children) {
-            String n = child.getName();
-            if (child.isDirectory() && n != null && n.equalsIgnoreCase(name)) return child;
+    private static String childDirId(ContentResolver resolver, Uri treeUri, String parentId, String name) {
+        if (parentId == null) return null;
+        for (DocNode child : listChildren(resolver, treeUri, parentId)) {
+            if (child.directory && child.name.equalsIgnoreCase(name)) return child.id;
         }
         return null;
     }
 
-    private static Scan scanTree(DocumentFile root, int depth) {
+    private static List<DocNode> listChildren(ContentResolver resolver, Uri treeUri, String parentId) {
+        ArrayList<DocNode> out = new ArrayList<>();
+        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId);
+        String[] projection = new String[] {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE
+        };
+        try (Cursor cursor = resolver.query(childrenUri, projection, null, null, null)) {
+            if (cursor == null) return out;
+            int idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+            int nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+            int typeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE);
+            int sizeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE);
+            while (cursor.moveToNext()) {
+                String id = idCol >= 0 ? cursor.getString(idCol) : null;
+                String name = nameCol >= 0 ? cursor.getString(nameCol) : null;
+                String mime = typeCol >= 0 ? cursor.getString(typeCol) : null;
+                long size = 0L;
+                if (sizeCol >= 0 && !cursor.isNull(sizeCol)) size = Math.max(0L, cursor.getLong(sizeCol));
+                if (id == null || name == null) continue;
+                boolean dir = DocumentsContract.Document.MIME_TYPE_DIR.equals(mime);
+                out.add(new DocNode(id, name, dir, size));
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("não foi possível ler a pasta selecionada", e);
+        }
+        return out;
+    }
+
+    private static Scan scanTree(ContentResolver resolver, Uri treeUri, String docId, int depth) {
         if (depth > MAX_DEPTH) throw new IllegalStateException("estrutura de pastas profunda demais");
         Scan out = new Scan();
-        for (DocumentFile child : root.listFiles()) {
-            String name = safeName(child.getName());
+        for (DocNode child : listChildren(resolver, treeUri, docId)) {
+            String name = safeName(child.name);
             if (name.isEmpty() || shouldSkip(name)) continue;
-            if (child.isDirectory()) {
-                Scan nested = scanTree(child, depth + 1);
+            if (child.directory) {
+                Scan nested = scanTree(resolver, treeUri, child.id, depth + 1);
                 out.files += nested.files;
                 out.bytes += nested.bytes;
-            } else if (child.isFile()) {
+            } else {
                 out.files++;
-                long len = child.length();
-                if (len > 0) out.bytes += len;
+                out.bytes += child.size;
                 if (out.files > MAX_FILES) throw new IllegalStateException("arquivos demais na pasta selecionada");
             }
         }
         return out;
     }
 
-    private static void copyTree(ContentResolver resolver, DocumentFile source, File destination,
+    private static void copyTree(ContentResolver resolver, Uri treeUri, String docId, File destination,
                                  CopyStats stats, int depth, Listener listener) throws Exception {
         if (depth > MAX_DEPTH) throw new IllegalStateException("estrutura de pastas profunda demais");
-        for (DocumentFile child : source.listFiles()) {
-            String name = safeName(child.getName());
+        for (DocNode child : listChildren(resolver, treeUri, docId)) {
+            String name = safeName(child.name);
             if (name.isEmpty() || shouldSkip(name)) continue;
             File dst = new File(destination, name);
 
-            if (child.isDirectory()) {
+            if (child.directory) {
                 if (!dst.mkdirs() && !dst.isDirectory())
                     throw new IllegalStateException("não foi possível criar " + name);
-                copyTree(resolver, child, dst, stats, depth + 1, listener);
-            } else if (child.isFile()) {
-                copyFile(resolver, child.getUri(), dst);
+                copyTree(resolver, treeUri, child.id, dst, stats, depth + 1, listener);
+            } else {
+                Uri documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.id);
+                copyFile(resolver, documentUri, dst);
                 stats.copiedFiles++;
                 stats.copiedBytes += Math.max(0L, dst.length());
                 int percent = stats.totalBytes > 0
@@ -255,6 +259,25 @@ public final class ArlBaseImportManager {
             throw new IllegalStateException("não foi possível substituir " + destination.getName());
         if (!tmp.renameTo(destination))
             throw new IllegalStateException("não foi possível finalizar " + destination.getName());
+    }
+
+    private static boolean looksLikeInstalledBase(File root) {
+        if (root == null || !root.isDirectory()) return false;
+        boolean texdb = dirExistsIgnoreCase(root, "texdb");
+        boolean data = dirExistsIgnoreCase(root, "data");
+        boolean models = dirExistsIgnoreCase(root, "models");
+        boolean audio = dirExistsIgnoreCase(root, "audio");
+        boolean samp = dirExistsIgnoreCase(root, "SAMP");
+        return texdb && (data || models || audio || samp);
+    }
+
+    private static boolean dirExistsIgnoreCase(File root, String name) {
+        File[] files = root.listFiles();
+        if (files == null) return false;
+        for (File file : files) {
+            if (file.isDirectory() && file.getName().equalsIgnoreCase(name)) return true;
+        }
+        return false;
     }
 
     private static boolean shouldSkip(String name) {
@@ -296,6 +319,19 @@ public final class ArlBaseImportManager {
 
     private static void complete(Listener listener, boolean success, String message) {
         if (listener != null) MAIN.post(() -> listener.onComplete(success, message));
+    }
+
+    private static final class DocNode {
+        final String id;
+        final String name;
+        final boolean directory;
+        final long size;
+        DocNode(String id, String name, boolean directory, long size) {
+            this.id = id;
+            this.name = name;
+            this.directory = directory;
+            this.size = size;
+        }
     }
 
     private static final class Scan {
