@@ -3,7 +3,7 @@
   "signingCertSha256": "a1d694751beddc6239d4fb54c40217421cb79d171d6a5e8bb87c44fb917ff50d",
   "active": {
     "app": 107,
-    "data": null
+    "data": "1.0.0"
   },
   "history": {
     "app": [
@@ -20,6 +20,16 @@
         "recordedAt": "2026-09-16T18:42:15Z"
       }
     ],
-    "data": []
+    "data": [
+      {
+        "version": "1.0.0",
+        "tag": "data-v1.0.0",
+        "url": "https://github.com/gunikee1508/ARL-Android/releases/download/data-v1.0.0/arl-data-v1.0.0.zip",
+        "sha256": "82316e873107f66d478cf884bc6ca28984620c0c6144326034abdcb785daac40",
+        "bytes": 573,
+        "manifestUrl": "https://github.com/gunikee1508/ARL-Android/releases/download/data-v1.0.0/arl-data-v1.0.0.manifest.json",
+        "recordedAt": "2026-09-16T18:42:46Z"
+      }
+    ]
   }
 }

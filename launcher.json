@@ -16,11 +16,11 @@
   "client": {
     "version": "0.3.7-R3",
     "data": {
-      "version": "",
-      "url": "",
-      "sha256": "",
-      "bytes": 0,
-      "manifestUrl": ""
+      "version": "1.0.0",
+      "url": "https://github.com/gunikee1508/ARL-Android/releases/download/data-v1.0.0/arl-data-v1.0.0.zip",
+      "sha256": "82316e873107f66d478cf884bc6ca28984620c0c6144326034abdcb785daac40",
+      "bytes": 573,
+      "manifestUrl": "https://github.com/gunikee1508/ARL-Android/releases/download/data-v1.0.0/arl-data-v1.0.0.manifest.json"
     }
   }
 }
