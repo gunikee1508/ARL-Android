@@ -8,18 +8,22 @@ on:
         required: true
         type: string
       source_url:
-        description: 'Direct HTTPS URL to the real ARL DATA ZIP'
-        required: true
+        description: 'Optional direct HTTPS URL. Leave blank to package arl_data_source/'
+        required: false
         type: string
       source_sha256:
-        description: 'Optional SHA-256 of the source ZIP before repackaging'
+        description: 'Optional SHA-256 of the external source ZIP'
         required: false
         type: string
       strip_single_root:
-        description: 'Strip one wrapper directory from the source ZIP'
+        description: 'Strip one wrapper directory from an external source ZIP'
         required: true
         default: true
         type: boolean
+  push:
+    branches: [ main ]
+    paths:
+      - 'release-requests/data.json'
 
 permissions:
   contents: write
@@ -33,9 +37,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      VERSION: ${{ inputs.version }}
-      SOURCE_URL: ${{ inputs.source_url }}
-      SOURCE_SHA256: ${{ inputs.source_sha256 }}
       GH_TOKEN: ${{ github.token }}
 
     steps:
@@ -45,55 +46,103 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Resolve DATA release parameters
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_URL: ${{ inputs.source_url }}
+          INPUT_SOURCE_SHA256: ${{ inputs.source_sha256 }}
+          INPUT_STRIP: ${{ inputs.strip_single_root }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+            SOURCE_URL="$INPUT_SOURCE_URL"
+            SOURCE_SHA256="$INPUT_SOURCE_SHA256"
+            STRIP="$INPUT_STRIP"
+            if [ -n "$SOURCE_URL" ]; then MODE="url"; else MODE="repository"; fi
+          else
+            test -s release-requests/data.json
+            eval "$(python3 - <<'PY'
+          import json, shlex
+          r=json.load(open('release-requests/data.json', encoding='utf-8'))
+          print('VERSION='+shlex.quote(str(r['version'])))
+          print('MODE='+shlex.quote(str(r.get('source','repository')).lower()))
+          print('SOURCE_URL='+shlex.quote(str(r.get('sourceUrl',''))))
+          print('SOURCE_SHA256='+shlex.quote(str(r.get('sourceSha256',''))))
+          print('STRIP='+shlex.quote('true' if bool(r.get('stripSingleRoot', True)) else 'false'))
+          PY
+          )"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SOURCE_MODE=$MODE" >> "$GITHUB_ENV"
+          echo "SOURCE_URL=$SOURCE_URL" >> "$GITHUB_ENV"
+          echo "SOURCE_SHA256=$SOURCE_SHA256" >> "$GITHUB_ENV"
+          echo "STRIP_SINGLE_ROOT=$STRIP" >> "$GITHUB_ENV"
+          echo "Resolved DATA $VERSION from $MODE"
+
       - name: Validate current production state
         run: python3 tools/production_state.py validate
 
-      - name: Validate release inputs
+      - name: Validate DATA release request
         shell: bash
         run: |
           python3 - <<'PY'
           import json, os, re
+          from pathlib import Path
           from urllib.parse import urlparse
           v=os.environ['VERSION'].strip()
+          mode=os.environ['SOURCE_MODE'].strip().lower()
           if not v or any(c in v for c in '/\\\r\n\t'):
               raise SystemExit('Invalid version')
-          u=urlparse(os.environ['SOURCE_URL'].strip())
-          if u.scheme != 'https' or not u.netloc:
-              raise SystemExit('source_url must be a direct HTTPS URL')
-          s=os.environ.get('SOURCE_SHA256','').strip()
-          if s and not re.fullmatch(r'[0-9a-fA-F]{64}', s):
-              raise SystemExit('source_sha256 must be 64 hex characters')
+          if mode not in {'repository','url'}:
+              raise SystemExit('source must be repository or url')
+          if mode == 'repository':
+              root=Path('arl_data_source')
+              if not root.is_dir() or not any(p.is_file() for p in root.rglob('*')):
+                  raise SystemExit('arl_data_source/ has no distributable files')
+          else:
+              u=urlparse(os.environ['SOURCE_URL'].strip())
+              if u.scheme != 'https' or not u.netloc:
+                  raise SystemExit('sourceUrl must be a direct HTTPS URL')
+              s=os.environ.get('SOURCE_SHA256','').strip()
+              if s and not re.fullmatch(r'[0-9a-fA-F]{64}', s):
+                  raise SystemExit('sourceSha256 must be 64 hex characters')
           state=json.load(open('production-state.json', encoding='utf-8'))
           if any(str(x.get('version')) == v for x in state.get('history',{}).get('data',[])):
               raise SystemExit('DATA version already exists in production history; releases are immutable')
           PY
 
-      - name: Download source DATA
+      - name: Prepare DATA source
         shell: bash
         run: |
-          mkdir -p source-data
-          curl --fail --location --retry 3 --retry-delay 2 \
-            --connect-timeout 20 --max-time 3600 \
-            "$SOURCE_URL" -o source-data/arl-data-source.zip
-          test -s source-data/arl-data-source.zip
-
-      - name: Verify source checksum when supplied
-        if: ${{ inputs.source_sha256 != '' }}
-        shell: bash
-        run: |
-          ACTUAL="$(sha256sum source-data/arl-data-source.zip | awk '{print $1}')"
-          test "${ACTUAL,,}" = "${SOURCE_SHA256,,}"
-          echo "Source SHA-256 OK: $ACTUAL"
+          set -euo pipefail
+          if [ "$SOURCE_MODE" = "repository" ]; then
+            echo "ARL_DATA_SOURCE_PATH=arl_data_source" >> "$GITHUB_ENV"
+            echo "Packaging ARL-owned repository data"
+          else
+            mkdir -p source-data
+            curl --fail --location --retry 3 --retry-delay 2 \
+              --connect-timeout 20 --max-time 3600 \
+              "$SOURCE_URL" -o source-data/arl-data-source.zip
+            test -s source-data/arl-data-source.zip
+            if [ -n "$SOURCE_SHA256" ]; then
+              ACTUAL="$(sha256sum source-data/arl-data-source.zip | awk '{print $1}')"
+              test "${ACTUAL,,}" = "${SOURCE_SHA256,,}"
+              echo "Source SHA-256 OK: $ACTUAL"
+            fi
+            echo "ARL_DATA_SOURCE_PATH=source-data/arl-data-source.zip" >> "$GITHUB_ENV"
+          fi
 
       - name: Build normalized DATA package and manifest
         shell: bash
         run: |
           EXTRA=""
-          if [ "${{ inputs.strip_single_root }}" = "false" ]; then
+          if [ "$SOURCE_MODE" = "url" ] && [ "$STRIP_SINGLE_ROOT" = "false" ]; then
             EXTRA="--no-strip-single-root"
           fi
           python3 tools/build_arl_data.py \
-            --source source-data/arl-data-source.zip \
+            --source "$ARL_DATA_SOURCE_PATH" \
             --version "$VERSION" \
             --output dist-data \
             $EXTRA
@@ -127,7 +176,7 @@ jobs:
           META="$(find dist-data -maxdepth 1 -type f -name '*.meta.json' -print -quit)"
           gh release create "$TAG" "$ZIP" "$MANIFEST" "$META" \
             --title "ARL Android DATA v${VERSION}" \
-            --notes "Immutable ARL Android DATA package v${VERSION}. Generated by the ARL production release pipeline with package and per-file SHA-256 verification."
+            --notes "Immutable ARL-owned Android overlay v${VERSION}. Base GTA SA files are not bundled; the launcher imports them from the player's legitimate copy. Package and per-file SHA-256 verification enabled."
 
       - name: Activate DATA version in launcher.json
         shell: bash
@@ -172,7 +221,7 @@ jobs:
       - name: Upload release audit artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ARL-DATA-v${{ inputs.version }}-audit
+          name: ARL-DATA-release-audit
           path: |
             dist-data/*.manifest.json
             dist-data/*.meta.json
