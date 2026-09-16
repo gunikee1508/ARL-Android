@@ -1,0 +1,78 @@
+name: Build ARL Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout ARL patch repo
+        uses: actions/checkout@v4
+
+      - name: Checkout SAMP-Mobile GTA-2.10
+        uses: actions/checkout@v4
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android components
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.2.11394342" \
+            "cmake;3.22.1"
+
+      - name: Apply ARL Phase 1 bridge
+        run: |
+          python3 apply_arl_phase1.py upstream
+
+      - name: Verify patch invariants
+        shell: bash
+        run: |
+          grep -q 'ReadSettingFile();' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'pSettings->Get().szHost' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'pSettings->Get().iPort' upstream/app/src/main/cpp/samp/main.cpp
+          ! grep -q 'new CNetGame("94.23.168.153", 2305' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'Amazing Real Life' upstream/app/src/main/res/values/strings.xml
+
+      - name: Make Gradle executable
+        run: chmod +x upstream/gradlew
+
+      - name: Build debug APK
+        working-directory: upstream
+        run: ./gradlew --stacktrace --no-daemon assembleDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          mkdir -p output
+          find upstream/app/build/outputs/apk -type f -name '*.apk' -print -exec cp {} output/ \;
+          test -n "$(find output -type f -name '*.apk' -print -quit)"
+          sha256sum output/*.apk | tee output/SHA256SUMS.txt
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Android-debug
+          path: output/*
+          if-no-files-found: error
