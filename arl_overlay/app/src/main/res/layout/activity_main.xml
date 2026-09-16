@@ -91,6 +91,38 @@
           android:visibility="gone"/>
 
       <TextView
+          android:id="@+id/arl_base_status"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="14dp"
+          android:text="VERIFICANDO BASE GTA SA..."
+          android:textColor="#F0C95C"
+          android:textStyle="bold"
+          android:textSize="11sp"/>
+
+      <ProgressBar
+          android:id="@+id/arl_base_progress"
+          style="?android:attr/progressBarStyleHorizontal"
+          android:layout_width="match_parent"
+          android:layout_height="6dp"
+          android:layout_marginTop="8dp"
+          android:max="100"
+          android:progress="0"
+          android:progressTint="#F0C95C"
+          android:progressBackgroundTint="#30363D"
+          android:visibility="gone"/>
+
+      <Button
+          android:id="@+id/arl_base_import"
+          android:layout_width="match_parent"
+          android:layout_height="48dp"
+          android:layout_marginTop="8dp"
+          android:text="IMPORTAR BASE GTA SA"
+          android:textStyle="bold"
+          android:textColor="#101216"
+          android:backgroundTint="#F0C95C"/>
+
+      <TextView
           android:id="@+id/arl_data_status"
           android:layout_width="match_parent"
           android:layout_height="wrap_content"
@@ -142,7 +174,7 @@
           android:layout_width="match_parent"
           android:layout_height="48dp"
           android:layout_marginTop="8dp"
-          android:text="VERIFICAR / REPARAR ARQUIVOS"
+          android:text="VERIFICAR / REPARAR ARQUIVOS ARL"
           android:textColor="#D7DCE1"
           android:backgroundTint="#242A30"/>
     </LinearLayout>
