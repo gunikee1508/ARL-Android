@@ -84,8 +84,12 @@ def main():
     g=re.sub(r'(?m)^\s*versionName\s+"[^"]*"\s*$',f'        versionName "{version_name}"',g,count=1)
 
     signing_preamble='''def arlKeystorePath = System.getenv("ARL_KEYSTORE_PATH")\ndef arlKeystorePassword = System.getenv("ARL_KEYSTORE_PASSWORD")\ndef arlKeyAlias = System.getenv("ARL_KEY_ALIAS")\ndef arlKeyPassword = System.getenv("ARL_KEY_PASSWORD")\ndef arlSigningReady = arlKeystorePath && arlKeystorePassword && arlKeyAlias && arlKeyPassword\n\n'''
+    # Gradle exige que plugins {} seja o primeiro bloco executável. Portanto as
+    # variáveis de assinatura entram imediatamente antes de android {}, nunca antes de plugins {}.
     if "def arlKeystorePath" not in g:
-        g=signing_preamble+g
+        android_pos=g.find("android {")
+        if android_pos < 0: die("bloco android ausente no Gradle")
+        g=g[:android_pos]+signing_preamble+g[android_pos:]
 
     signing_block='''android {\n    if (arlSigningReady) {\n        signingConfigs {\n            arlRelease {\n                storeFile file(arlKeystorePath)\n                storePassword arlKeystorePassword\n                keyAlias arlKeyAlias\n                keyPassword arlKeyPassword\n            }\n        }\n    }'''
     g=g.replace("android {",signing_block,1)
@@ -169,6 +173,7 @@ def main():
       f'versionCode {version_code}' in gg,
       f'versionName "{version_name}"' in gg,
       'def arlSigningReady' in gg,
+      gg.find('plugins {') < gg.find('def arlKeystorePath') < gg.find('android {'),
       'android:name=".launcher.MainActivity"' in xx,
       splash_block is not None and "android.intent.category.LAUNCHER" in splash_block.group(0),
       xx.count("android.intent.category.LAUNCHER") == 1,
