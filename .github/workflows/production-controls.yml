@@ -31,7 +31,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: arl-production-control
+  group: arl-production-state
   cancel-in-progress: false
 
 jobs:
