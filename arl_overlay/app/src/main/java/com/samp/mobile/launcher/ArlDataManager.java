@@ -18,18 +18,7 @@ import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-/**
- * ARL Phase 2 data updater.
- *
- * The launcher downloads only the ARL data package described by launcher.json,
- * verifies the whole archive with SHA-256, extracts it into an isolated staging
- * directory and only then merges it into the app-specific game directory.
- *
- * The ZIP must contain paths relative to getExternalFilesDir(null), for example:
- *   SAMP/...
- *   texdb/...
- *   data/...
- */
+/** ARL Phase 2 DATA updater with archive and installed-file verification. */
 public final class ArlDataManager {
     public interface Listener {
         void onState(String text);
@@ -41,15 +30,18 @@ public final class ArlDataManager {
     private static final String KEY_VERSION = "installed_version";
     private static final String KEY_SHA256 = "installed_sha256";
     private static final int BUFFER = 64 * 1024;
+    private static final int MAX_ZIP_ENTRIES = 100000;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private ArlDataManager() {}
 
     public static boolean isConfigured() {
-        String url = ArlRemoteConfig.dataUrl();
-        String sha = ArlRemoteConfig.dataSha256();
-        return url != null && (url.startsWith("https://") || url.startsWith("http://"))
-                && sha != null && sha.matches("(?i)[0-9a-f]{64}");
+        String url = safe(ArlRemoteConfig.dataUrl());
+        String sha = safe(ArlRemoteConfig.dataSha256());
+        String version = safe(ArlRemoteConfig.dataVersion());
+        return !version.isEmpty()
+                && (url.startsWith("https://") || url.startsWith("http://"))
+                && sha.matches("(?i)[0-9a-f]{64}");
     }
 
     public static String installedVersion(Context context) {
@@ -58,16 +50,13 @@ public final class ArlDataManager {
 
     public static boolean requiresRepair(Context context) {
         if (!isConfigured()) return false;
-
-        String remote = safe(ArlRemoteConfig.dataVersion());
-        if (remote.isEmpty() || !remote.equals(installedVersion(context))) return true;
+        if (!safe(ArlRemoteConfig.dataVersion()).equals(installedVersion(context))) return true;
 
         File root = context.getExternalFilesDir(null);
         if (root == null) return true;
 
-        for (String relative : ArlRemoteConfig.requiredFiles()) {
-            File f = resolveInside(root, relative);
-            if (f == null || !f.isFile() || f.length() <= 0) return true;
+        for (ArlRemoteConfig.DataFile spec : ArlRemoteConfig.dataFiles()) {
+            if (!verifyFile(root, spec)) return true;
         }
         return false;
     }
@@ -83,12 +72,12 @@ public final class ArlDataManager {
                 }
 
                 if (!force && !requiresRepair(app)) {
-                    progress(listener, 100, "ARQUIVOS ATUALIZADOS");
+                    progress(listener, 100, "ARQUIVOS VERIFICADOS");
                     complete(listener, true,
-                            "Arquivos do ARL verificados. Versão " + ArlRemoteConfig.dataVersion() + ".");
+                            "Arquivos do ARL estão íntegros. Versão " +
+                                    ArlRemoteConfig.dataVersion() + ".");
                     return;
                 }
-
                 runRepair(app, listener);
             } catch (Exception e) {
                 complete(listener, false, "Falha ao reparar DATA: " + readable(e));
@@ -98,7 +87,7 @@ public final class ArlDataManager {
 
     private static void runRepair(Context context, Listener listener) throws Exception {
         File root = context.getExternalFilesDir(null);
-        if (root == null) throw new IllegalStateException("armazenamento externo indisponível");
+        if (root == null) throw new IllegalStateException("armazenamento indisponível");
 
         File work = new File(root, "download/arl_phase2");
         File zipPart = new File(work, "arl-data.zip.part");
@@ -111,31 +100,28 @@ public final class ArlDataManager {
         DownloadResult result = download(ArlRemoteConfig.dataUrl(), zipPart, listener);
 
         long expectedBytes = ArlRemoteConfig.dataBytes();
-        if (expectedBytes > 0 && result.bytes != expectedBytes) {
-            throw new IllegalStateException("tamanho inválido: " + result.bytes + " / " + expectedBytes);
-        }
+        if (expectedBytes > 0 && result.bytes != expectedBytes)
+            throw new IllegalStateException("tamanho do pacote não confere");
 
         String expectedSha = safe(ArlRemoteConfig.dataSha256()).toLowerCase(Locale.US);
-        if (!expectedSha.equals(result.sha256)) {
+        if (!expectedSha.equals(result.sha256))
             throw new SecurityException("SHA-256 da DATA não confere");
-        }
 
-        progress(listener, 86, "HASH OK • EXTRAINDO...");
+        progress(listener, 86, "HASH DO PACOTE OK • EXTRAINDO...");
         unzipSafely(zipPart, stage, listener);
 
-        for (String relative : ArlRemoteConfig.requiredFiles()) {
-            File f = resolveInside(stage, relative);
-            if (f == null || !f.isFile() || f.length() <= 0)
-                throw new IllegalStateException("arquivo obrigatório ausente no pacote: " + relative);
+        progress(listener, 95, "VALIDANDO ARQUIVOS...");
+        for (ArlRemoteConfig.DataFile spec : ArlRemoteConfig.dataFiles()) {
+            if (!verifyFile(stage, spec))
+                throw new SecurityException("arquivo inválido no pacote: " + spec.path);
         }
 
         progress(listener, 97, "INSTALANDO ARQUIVOS...");
         mergeTree(stage, root);
 
-        for (String relative : ArlRemoteConfig.requiredFiles()) {
-            File f = resolveInside(root, relative);
-            if (f == null || !f.isFile() || f.length() <= 0)
-                throw new IllegalStateException("arquivo obrigatório não foi instalado: " + relative);
+        for (ArlRemoteConfig.DataFile spec : ArlRemoteConfig.dataFiles()) {
+            if (!verifyFile(root, spec))
+                throw new SecurityException("arquivo instalado não confere: " + spec.path);
         }
 
         prefs(context).edit()
@@ -146,30 +132,32 @@ public final class ArlDataManager {
         deleteTree(work);
         progress(listener, 100, "DATA PRONTA");
         complete(listener, true,
-                "DATA do ARL instalada com sucesso. Versão " + ArlRemoteConfig.dataVersion() + ".");
+                "DATA do ARL instalada e verificada. Versão " +
+                        ArlRemoteConfig.dataVersion() + ".");
     }
 
-    private static DownloadResult download(String source, File target, Listener listener) throws Exception {
+    private static DownloadResult download(String source, File target, Listener listener)
+            throws Exception {
         File parent = target.getParentFile();
         if (parent != null) parent.mkdirs();
 
-        HttpURLConnection connection = (HttpURLConnection) new URL(source).openConnection();
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(30000);
-        connection.setInstanceFollowRedirects(true);
-        connection.setRequestProperty("User-Agent", "ARL-Android/" + ArlConfig.CLIENT_VERSION);
-        connection.connect();
+        HttpURLConnection c = (HttpURLConnection) new URL(source).openConnection();
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(30000);
+        c.setInstanceFollowRedirects(true);
+        c.setRequestProperty("User-Agent", "ARL-Android/" + ArlConfig.CLIENT_VERSION);
+        c.connect();
 
-        int code = connection.getResponseCode();
+        int code = c.getResponseCode();
         if (code < 200 || code >= 300)
             throw new IllegalStateException("HTTP " + code + " ao baixar DATA");
 
-        long total = connection.getContentLengthLong();
+        long total = c.getContentLengthLong();
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         long done = 0;
         int lastPercent = -1;
 
-        try (InputStream in = new BufferedInputStream(connection.getInputStream(), BUFFER);
+        try (InputStream in = new BufferedInputStream(c.getInputStream(), BUFFER);
              FileOutputStream fileOut = new FileOutputStream(target);
              BufferedOutputStream out = new BufferedOutputStream(fileOut, BUFFER)) {
             byte[] buf = new byte[BUFFER];
@@ -179,10 +167,9 @@ public final class ArlDataManager {
                 digest.update(buf, 0, n);
                 done += n;
 
-                int p;
-                if (total > 0) p = (int) Math.min(85, (done * 85L) / total);
-                else p = (int) Math.min(84, done / (1024L * 1024L));
-
+                int p = total > 0
+                        ? (int) Math.min(85, (done * 85L) / total)
+                        : (int) Math.min(84, done / (1024L * 1024L));
                 if (p != lastPercent) {
                     lastPercent = p;
                     progress(listener, p, "BAIXANDO • " + human(done) +
@@ -192,28 +179,34 @@ public final class ArlDataManager {
             out.flush();
             fileOut.getFD().sync();
         } finally {
-            connection.disconnect();
+            c.disconnect();
         }
-
         return new DownloadResult(done, hex(digest.digest()));
     }
 
     private static void unzipSafely(File zip, File stage, Listener listener) throws Exception {
-        String rootPath = stage.getCanonicalPath() + File.separator;
+        String stageCanonical = stage.getCanonicalPath();
+        String rootPath = stageCanonical + File.separator;
         int entries = 0;
+        long unpacked = 0;
+        long packageBytes = Math.max(ArlRemoteConfig.dataBytes(), zip.length());
+        long maxUnpacked = Math.max(512L * 1024L * 1024L, packageBytes * 20L);
 
         try (ZipInputStream zis = new ZipInputStream(
                 new BufferedInputStream(new FileInputStream(zip), BUFFER))) {
             ZipEntry entry;
             byte[] buf = new byte[BUFFER];
             while ((entry = zis.getNextEntry()) != null) {
+                if (++entries > MAX_ZIP_ENTRIES)
+                    throw new SecurityException("pacote contém arquivos demais");
+
                 String name = entry.getName().replace('\\', '/');
                 if (name.startsWith("/") || name.contains("../") || name.equals(".."))
                     throw new SecurityException("caminho inválido no ZIP: " + name);
 
                 File out = new File(stage, name);
                 String outPath = out.getCanonicalPath();
-                if (!outPath.equals(stage.getCanonicalPath()) && !outPath.startsWith(rootPath))
+                if (!outPath.equals(stageCanonical) && !outPath.startsWith(rootPath))
                     throw new SecurityException("ZIP tentou sair da pasta de destino");
 
                 if (entry.isDirectory()) {
@@ -227,24 +220,51 @@ public final class ArlDataManager {
                     try (BufferedOutputStream bos = new BufferedOutputStream(
                             new FileOutputStream(out), BUFFER)) {
                         int n;
-                        while ((n = zis.read(buf)) != -1) bos.write(buf, 0, n);
+                        while ((n = zis.read(buf)) != -1) {
+                            unpacked += n;
+                            if (unpacked > maxUnpacked)
+                                throw new SecurityException("pacote expandido excedeu o limite");
+                            bos.write(buf, 0, n);
+                        }
                     }
                 }
                 zis.closeEntry();
-                entries++;
                 if (entries % 20 == 0)
-                    progress(listener, Math.min(96, 86 + entries / 20),
+                    progress(listener, Math.min(94, 86 + entries / 20),
                             "EXTRAINDO • " + entries + " arquivos");
             }
         }
-
         if (entries == 0) throw new IllegalStateException("pacote DATA vazio");
+    }
+
+    private static boolean verifyFile(File root, ArlRemoteConfig.DataFile spec) {
+        File f = resolveInside(root, spec.path);
+        if (f == null || !f.isFile() || f.length() <= 0) return false;
+        if (spec.bytes >= 0 && f.length() != spec.bytes) return false;
+        if (spec.hasSha256()) {
+            try {
+                return spec.sha256.equalsIgnoreCase(sha256(f));
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String sha256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (BufferedInputStream in = new BufferedInputStream(
+                new FileInputStream(file), BUFFER)) {
+            byte[] buf = new byte[BUFFER];
+            int n;
+            while ((n = in.read(buf)) != -1) digest.update(buf, 0, n);
+        }
+        return hex(digest.digest());
     }
 
     private static void mergeTree(File source, File destination) throws Exception {
         File[] files = source.listFiles();
         if (files == null) return;
-
         for (File src : files) {
             File dst = new File(destination, src.getName());
             if (src.isDirectory()) {
@@ -252,12 +272,12 @@ public final class ArlDataManager {
                     throw new IllegalStateException("não foi possível criar " + dst.getName());
                 mergeTree(src, dst);
             } else {
-                copy(src, dst);
+                copyAtomic(src, dst);
             }
         }
     }
 
-    private static void copy(File src, File dst) throws Exception {
+    private static void copyAtomic(File src, File dst) throws Exception {
         File parent = dst.getParentFile();
         if (parent != null && !parent.mkdirs() && !parent.isDirectory())
             throw new IllegalStateException("não foi possível criar destino");
@@ -272,9 +292,10 @@ public final class ArlDataManager {
             out.flush();
             fos.getFD().sync();
         }
-
-        if (dst.exists() && !dst.delete()) throw new IllegalStateException("falha substituindo " + dst.getName());
-        if (!tmp.renameTo(dst)) throw new IllegalStateException("falha finalizando " + dst.getName());
+        if (dst.exists() && !dst.delete())
+            throw new IllegalStateException("falha substituindo " + dst.getName());
+        if (!tmp.renameTo(dst))
+            throw new IllegalStateException("falha finalizando " + dst.getName());
     }
 
     private static File resolveInside(File root, String relative) {
