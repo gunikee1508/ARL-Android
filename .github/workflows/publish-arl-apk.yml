@@ -20,6 +20,10 @@ on:
         required: true
         default: false
         type: boolean
+  push:
+    branches: [ main ]
+    paths:
+      - 'release-requests/app.json'
 
 permissions:
   contents: write
@@ -35,8 +39,6 @@ jobs:
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      ARL_VERSION_CODE: ${{ inputs.version_code }}
-      ARL_VERSION_NAME: ${{ inputs.version_name }}
       ARL_KEYSTORE_PASSWORD: ${{ secrets.ARL_KEYSTORE_PASSWORD }}
       ARL_KEY_ALIAS: ${{ secrets.ARL_KEY_ALIAS }}
       ARL_KEY_PASSWORD: ${{ secrets.ARL_KEY_PASSWORD }}
@@ -49,6 +51,38 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Resolve release parameters
+        shell: bash
+        env:
+          INPUT_VERSION_CODE: ${{ inputs.version_code }}
+          INPUT_VERSION_NAME: ${{ inputs.version_name }}
+          INPUT_MIN_VERSION_CODE: ${{ inputs.min_version_code }}
+          INPUT_MANDATORY: ${{ inputs.mandatory }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            CODE="$INPUT_VERSION_CODE"
+            NAME="$INPUT_VERSION_NAME"
+            MIN="$INPUT_MIN_VERSION_CODE"
+            MANDATORY="$INPUT_MANDATORY"
+          else
+            test -s release-requests/app.json
+            eval "$(python3 - <<'PY'
+          import json, shlex
+          r=json.load(open('release-requests/app.json', encoding='utf-8'))
+          print('CODE='+shlex.quote(str(r['versionCode'])))
+          print('NAME='+shlex.quote(str(r['versionName'])))
+          print('MIN='+shlex.quote(str(r.get('minVersionCode', r['versionCode']))))
+          print('MANDATORY='+shlex.quote('true' if bool(r.get('mandatory', False)) else 'false'))
+          PY
+          )"
+          fi
+          echo "ARL_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "ARL_VERSION_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "ARL_MIN_VERSION_CODE=$MIN" >> "$GITHUB_ENV"
+          echo "ARL_MANDATORY=$MANDATORY" >> "$GITHUB_ENV"
+          echo "Resolved ARL Android $NAME ($CODE), min=$MIN, mandatory=$MANDATORY"
+
       - name: Validate current production state
         run: python3 tools/production_state.py validate
 
@@ -60,8 +94,8 @@ jobs:
           set -euo pipefail
           test "$ARL_VERSION_CODE" -gt 0
           test -n "$ARL_VERSION_NAME"
-          test "${{ inputs.min_version_code }}" -gt 0
-          test "${{ inputs.min_version_code }}" -le "$ARL_VERSION_CODE"
+          test "$ARL_MIN_VERSION_CODE" -gt 0
+          test "$ARL_MIN_VERSION_CODE" -le "$ARL_VERSION_CODE"
           test -n "$ARL_KEYSTORE_BASE64"
           test -n "$ARL_KEYSTORE_PASSWORD"
           test -n "$ARL_KEY_ALIAS"
@@ -173,7 +207,7 @@ jobs:
         shell: bash
         run: |
           EXTRA=""
-          if [ "${{ inputs.mandatory }}" = "true" ]; then EXTRA="--mandatory"; fi
+          if [ "$ARL_MANDATORY" = "true" ]; then EXTRA="--mandatory"; fi
           python3 tools/activate_arl_app.py \
             --launcher launcher.json \
             --apk "$APK_PATH" \
@@ -181,7 +215,7 @@ jobs:
             --tag "$RELEASE_TAG" \
             --version-code "$ARL_VERSION_CODE" \
             --version-name "$ARL_VERSION_NAME" \
-            --min-version-code "${{ inputs.min_version_code }}" \
+            --min-version-code "$ARL_MIN_VERSION_CODE" \
             $EXTRA
           python3 tools/production_state.py capture-app \
             --tag "$RELEASE_TAG" \
@@ -209,7 +243,7 @@ jobs:
       - name: Upload release audit artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ARL-APK-${{ inputs.version_name }}-audit
+          name: ARL-APK-release-audit
           path: |
             release-output/SHA256SUMS.txt
             release-output/APKSIGNER.txt
