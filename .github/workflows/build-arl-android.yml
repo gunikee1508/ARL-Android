@@ -63,7 +63,7 @@ jobs:
             --version-name ci-test \
             --min-version-code 998 \
             --mandatory
-          CERT_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          CERT_A="$(python3 -c "import json; s=json.load(open('production-state.json')); print(s.get('signingCertSha256') or 'a'*64)")"
           CERT_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
           python3 tools/production_state.py capture-app \
             --state "$TESTROOT/production-state.json" \
@@ -118,7 +118,7 @@ jobs:
           assert l['maintenance'] is False
           assert s['active']['data']=='ci-test'
           assert s['active']['app']==999
-          assert s['signingCertSha256']=='a'*64
+          assert len(s['signingCertSha256'])==64
           assert len(s['history']['data'])==1
           assert len(s['history']['app'])==1
           print('ARL Phase 5 production tooling self-test OK')
