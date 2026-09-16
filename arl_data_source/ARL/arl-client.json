@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "product": "Amazing Real Life RPG",
+  "channel": "production",
+  "server": {
+    "host": "play.arl-samprpg.site",
+    "port": 7777
+  },
+  "clientProtocol": "0.3.7-R3",
+  "managedBy": "ARL Android launcher",
+  "basePolicy": "Player-provided legitimate GTA SA Android data",
+  "note": "This package contains only ARL-owned metadata/assets. Proprietary GTA SA base files are not distributed."
+}
