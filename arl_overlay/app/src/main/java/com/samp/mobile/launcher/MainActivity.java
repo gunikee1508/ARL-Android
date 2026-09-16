@@ -9,6 +9,7 @@ import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -34,8 +35,10 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
     private EditText nickname;
-    private TextView endpoint, status;
-    private Button playButton;
+    private TextView endpoint, status, dataStatus;
+    private Button playButton, repairButton;
+    private ProgressBar dataProgress;
+    private boolean dataBusy = false;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     /*
@@ -56,28 +59,32 @@ public class MainActivity extends AppCompatActivity {
         nickname = findViewById(R.id.arl_nickname);
         endpoint = findViewById(R.id.arl_endpoint);
         status = findViewById(R.id.arl_status);
+        dataStatus = findViewById(R.id.arl_data_status);
+        dataProgress = findViewById(R.id.arl_data_progress);
         playButton = findViewById(R.id.arl_play);
+        repairButton = findViewById(R.id.arl_repair);
 
         loadNickname();
 
         findViewById(R.id.arl_discord).setOnClickListener(v -> open(ArlConfig.DISCORD));
         findViewById(R.id.arl_instagram).setOnClickListener(v -> open(ArlConfig.INSTAGRAM));
         findViewById(R.id.arl_forum).setOnClickListener(v -> open(ArlConfig.FORUM));
-        findViewById(R.id.arl_repair).setOnClickListener(v ->
-            Toast.makeText(this, "DATA/hash entra na Phase 2.", Toast.LENGTH_LONG).show());
-
+        repairButton.setOnClickListener(v -> beginRepair(false));
         playButton.setOnClickListener(v -> play());
 
         endpoint.setText(ArlConfig.DEFAULT_HOST + ":" + ArlConfig.DEFAULT_PORT);
         status.setText("CONSULTANDO SERVIDOR...");
+        dataStatus.setText("VERIFICANDO DATA...");
+        dataProgress.setVisibility(View.GONE);
 
         ArlRemoteConfig.refresh(this, () -> {
             endpoint.setText(ArlRemoteConfig.host() + ":" + ArlRemoteConfig.port());
+            refreshDataState();
+
             if(ArlRemoteConfig.maintenance()) {
                 status.setText("MANUTENÇÃO");
                 playButton.setEnabled(false);
             } else {
-                playButton.setEnabled(true);
                 refreshStatus();
             }
         });
@@ -95,16 +102,100 @@ public class MainActivity extends AppCompatActivity {
         } catch(Exception ignored) {}
     }
 
+    private void refreshDataState() {
+        if(dataBusy) return;
+
+        if(!ArlDataManager.isConfigured()) {
+            dataStatus.setText("DATA LOCAL • PACOTE REMOTO AINDA NÃO CONFIGURADO");
+            repairButton.setEnabled(false);
+            if(!ArlRemoteConfig.maintenance()) playButton.setEnabled(true);
+            return;
+        }
+
+        repairButton.setEnabled(true);
+        if(ArlDataManager.requiresRepair(this)) {
+            String version = ArlRemoteConfig.dataVersion();
+            dataStatus.setText("ATUALIZAÇÃO DE ARQUIVOS NECESSÁRIA" +
+                    (version.isEmpty() ? "" : " • " + version));
+            playButton.setEnabled(false);
+        } else {
+            String installed = ArlDataManager.installedVersion(this);
+            dataStatus.setText("DATA ATUALIZADA" +
+                    (installed.isEmpty() ? "" : " • " + installed));
+            if(!ArlRemoteConfig.maintenance()) playButton.setEnabled(true);
+        }
+    }
+
+    private void beginRepair(boolean force) {
+        if(dataBusy) return;
+        if(!ArlDataManager.isConfigured()) {
+            Toast.makeText(this,
+                    "O pacote DATA ainda não está configurado no launcher.json.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        dataBusy = true;
+        playButton.setEnabled(false);
+        repairButton.setEnabled(false);
+        dataProgress.setVisibility(View.VISIBLE);
+        dataProgress.setIndeterminate(false);
+        dataProgress.setProgress(0);
+        dataStatus.setText("PREPARANDO VERIFICAÇÃO...");
+
+        ArlDataManager.verifyOrRepair(this, force, new ArlDataManager.Listener() {
+            @Override public void onState(String text) {
+                dataStatus.setText(text);
+            }
+
+            @Override public void onProgress(int percent, String text) {
+                dataProgress.setProgress(percent);
+                dataStatus.setText(text + " • " + percent + "%");
+            }
+
+            @Override public void onComplete(boolean success, String message) {
+                dataBusy = false;
+                repairButton.setEnabled(true);
+                dataProgress.setVisibility(View.GONE);
+
+                if(success) {
+                    refreshDataState();
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                } else {
+                    dataStatus.setText("FALHA NA DATA • TOQUE EM REPARAR");
+                    playButton.setEnabled(!ArlDataManager.requiresRepair(MainActivity.this)
+                            && !ArlRemoteConfig.maintenance());
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+    }
+
     private void play() {
+        if(dataBusy) {
+            Toast.makeText(this, "Aguarde a atualização dos arquivos.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if(ArlRemoteConfig.maintenance()) {
+            Toast.makeText(this, "Servidor em manutenção.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if(ArlDataManager.isConfigured() && ArlDataManager.requiresRepair(this)) {
+            Toast.makeText(this,
+                    "Os arquivos do ARL precisam ser atualizados antes de jogar.",
+                    Toast.LENGTH_LONG).show();
+            beginRepair(false);
+            return;
+        }
+
         String nick = nickname.getText().toString().trim();
         if(nick.length() < 3 || nick.length() > 24) {
             Toast.makeText(this, "Nickname: 3 a 24 caracteres.", Toast.LENGTH_LONG).show();
             return;
         }
-        if(ArlRemoteConfig.maintenance()) {
-            Toast.makeText(this, "Servidor em manutenção.", Toast.LENGTH_LONG).show();
-            return;
-        }
+
         try {
             ConfigValidator.validateConfigFiles(this);
             Wini ini = new Wini(settingsFile());
