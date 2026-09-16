@@ -1,0 +1,100 @@
+name: Phase 8 - Audit GTA Brasil Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase8-auto-bootstrap-gta-brasil
+    paths:
+      - tools/audit_gta_brasil_android.py
+      - .github/workflows/audit-gta-brasil-android.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout ARL Android
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned GTA Brasil source
+        uses: actions/checkout@v4
+        with:
+          repository: pedrolecio/gta-brasil
+          ref: 1876efdc788d014ce482128e2eb91a0413cf051b
+          path: _sources/gta-brasil
+          lfs: true
+          fetch-depth: 1
+
+      - name: Ensure GTA Brasil LFS payloads are present
+        working-directory: _sources/gta-brasil
+        run: |
+          git lfs install --local
+          git lfs pull
+
+      - name: Audit and stage Android candidates
+        run: |
+          python3 tools/audit_gta_brasil_android.py \
+            "_sources/gta-brasil/GTA Brasil/.(mod)" \
+            --out gta-brasil-audit \
+            --source-repo pedrolecio/gta-brasil \
+            --source-revision 1876efdc788d014ce482128e2eb91a0413cf051b \
+            --stage-direct
+
+      - name: Enforce Phase 8 safety gates
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('gta-brasil-audit')
+          report = json.loads((root / 'audit.json').read_text(encoding='utf-8'))
+          files = report['files']
+          assert files, 'audit returned no files'
+          assert set(report['policy']['categories']) == {
+              'compatible_direct', 'needs_conversion', 'needs_port', 'pc_only'
+          }
+
+          forbidden = {'.asi', '.dll', '.exe', '.com', '.bat', '.cmd', '.msi', '.ocx', '.sys'}
+          for item in files:
+              ext = item['extension'].lower()
+              path = item['path']
+              if ext == '.txd':
+                  assert item['category'] == 'needs_conversion', f'TXD escaped conversion gate: {path}'
+              if ext in forbidden:
+                  assert item['category'] == 'pc_only', f'PC binary escaped exclusion gate: {path}'
+              if ext in {'.cs', '.cleo', '.sc'}:
+                  assert item['category'] == 'needs_port', f'CLEO escaped port gate: {path}'
+
+          candidate = root / 'candidate-layer'
+          if candidate.exists():
+              for p in candidate.rglob('*'):
+                  if not p.is_file() or p.name == 'ARL_CANDIDATE_MANIFEST.json':
+                      continue
+                  assert p.suffix.lower() not in forbidden | {'.txd', '.cs', '.cleo', '.sc'}, \
+                      f'forbidden file staged into candidate layer: {p}'
+
+          print('Phase 8 safety gates: OK')
+          PY
+
+      - name: Preserve upstream license and credits with audit
+        run: |
+          mkdir -p gta-brasil-audit/upstream
+          cp _sources/gta-brasil/LICENSE gta-brasil-audit/upstream/LICENSE-GTA-BRASIL.txt
+          cp _sources/gta-brasil/CREDITOS.md gta-brasil-audit/upstream/CREDITOS-GTA-BRASIL.md
+          cp _sources/gta-brasil/README.md gta-brasil-audit/upstream/README-GTA-BRASIL.md
+
+      - name: Publish audit summary
+        run: cat gta-brasil-audit/REPORT.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reproducible audit and candidate layer
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase8-gta-brasil-android-audit
+          path: gta-brasil-audit/
+          if-no-files-found: error
+          retention-days: 14
