@@ -4,6 +4,15 @@
     "host": "play.arl-samprpg.site",
     "port": 7777
   },
+  "app": {
+    "latestVersionCode": 106,
+    "minVersionCode": 106,
+    "versionName": "1.0.0",
+    "apkUrl": "",
+    "sha256": "",
+    "bytes": 0,
+    "mandatory": false
+  },
   "client": {
     "version": "0.3.7-R3",
     "data": {
