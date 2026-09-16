@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: arl-apk-release
+  group: arl-production-state
   cancel-in-progress: false
 
 jobs:
@@ -202,6 +202,14 @@ jobs:
           gh release create "$RELEASE_TAG" "$APK_PATH" release-output/SHA256SUMS.txt release-output/APKSIGNER.txt \
             --title "Amazing Real Life Android ${ARL_VERSION_NAME}" \
             --notes "Signed ARL Android launcher. versionCode ${ARL_VERSION_CODE}. Signing certificate continuity enforced by the production pipeline."
+
+      - name: Sync latest main before activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git rebase origin/main
+          python3 tools/production_state.py validate
 
       - name: Activate launcher APK update channel
         shell: bash
