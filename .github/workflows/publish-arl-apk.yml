@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version_code:
-        description: 'Android versionCode (must increase)'
+        description: 'Android versionCode (must increase after first production release)'
         required: true
         type: number
       version_name:
@@ -49,6 +49,9 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Validate current production state
+        run: python3 tools/production_state.py validate
+
       - name: Validate release inputs and signing secrets
         shell: bash
         env:
@@ -63,6 +66,17 @@ jobs:
           test -n "$ARL_KEYSTORE_PASSWORD"
           test -n "$ARL_KEY_ALIAS"
           test -n "$ARL_KEY_PASSWORD"
+          python3 - <<'PY'
+          import json, os
+          state=json.load(open('production-state.json', encoding='utf-8'))
+          code=int(os.environ['ARL_VERSION_CODE'])
+          old=[int(x['versionCode']) for x in state.get('history',{}).get('app',[]) if 'versionCode' in x]
+          if old and code <= max(old):
+              raise SystemExit(f'versionCode must increase: received {code}, current max is {max(old)}')
+          name=os.environ['ARL_VERSION_NAME'].strip()
+          if not name or any(c in name for c in '/\\\r\n\t'):
+              raise SystemExit('Invalid version_name')
+          PY
           printf '%s' "$ARL_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/arl-release.jks"
           test -s "$RUNNER_TEMP/arl-release.jks"
           echo "ARL_KEYSTORE_PATH=$RUNNER_TEMP/arl-release.jks" >> "$GITHUB_ENV"
@@ -115,9 +129,28 @@ jobs:
           SAFE_NAME="$(printf '%s' "$ARL_VERSION_NAME" | tr -c 'A-Za-z0-9._-' '-')"
           APK="release-output/Amazing-Real-Life-${SAFE_NAME}.apk"
           cp "$SRC" "$APK"
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$APK" | tee release-output/APKSIGNER.txt
+          CERT_SHA="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' release-output/APKSIGNER.txt | head -n1 | tr -d ':' | tr 'A-F' 'a-f')"
+          test "${#CERT_SHA}" -eq 64
+          printf '%s' "$CERT_SHA" | grep -Eq '^[0-9a-f]{64}$'
           sha256sum "$APK" | tee release-output/SHA256SUMS.txt
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          echo "ARL_CERT_SHA256=$CERT_SHA" >> "$GITHUB_ENV"
+
+      - name: Enforce signing certificate continuity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          state=json.load(open('production-state.json', encoding='utf-8'))
+          saved=str(state.get('signingCertSha256','')).strip().lower()
+          actual=os.environ['ARL_CERT_SHA256'].strip().lower()
+          if not re.fullmatch(r'[0-9a-f]{64}', actual):
+              raise SystemExit('Invalid APK signing certificate SHA-256')
+          if saved and saved != actual:
+              raise SystemExit('Signing certificate changed. Production release blocked to preserve Android update compatibility.')
+          print('Signing certificate continuity OK:', actual)
+          PY
 
       - name: Refuse to overwrite an existing APK release
         shell: bash
@@ -132,9 +165,9 @@ jobs:
       - name: Publish immutable signed APK release
         shell: bash
         run: |
-          gh release create "$RELEASE_TAG" "$APK_PATH" release-output/SHA256SUMS.txt \
+          gh release create "$RELEASE_TAG" "$APK_PATH" release-output/SHA256SUMS.txt release-output/APKSIGNER.txt \
             --title "Amazing Real Life Android ${ARL_VERSION_NAME}" \
-            --notes "Signed ARL Android launcher. versionCode ${ARL_VERSION_CODE}."
+            --notes "Signed ARL Android launcher. versionCode ${ARL_VERSION_CODE}. Signing certificate continuity enforced by the production pipeline."
 
       - name: Activate launcher APK update channel
         shell: bash
@@ -150,14 +183,26 @@ jobs:
             --version-name "$ARL_VERSION_NAME" \
             --min-version-code "${{ inputs.min_version_code }}" \
             $EXTRA
-          python3 -m json.tool launcher.json >/dev/null
+          python3 tools/production_state.py capture-app \
+            --tag "$RELEASE_TAG" \
+            --cert-sha256 "$ARL_CERT_SHA256"
+          python3 tools/production_state.py validate
 
-      - name: Commit active APK pointer
+      - name: Health-check published APK asset
+        shell: bash
+        run: |
+          URL="$(python3 -c "import json; print(json.load(open('launcher.json'))['app']['apkUrl'])")"
+          echo "Checking $URL"
+          curl --fail --silent --show-error --location --retry 4 \
+            --connect-timeout 15 --max-time 60 --range 0-0 \
+            "$URL" -o /dev/null
+
+      - name: Commit active APK pointer and production state
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add launcher.json
+          git add launcher.json production-state.json
           git commit -m "Activate ARL Android ${ARL_VERSION_NAME} (${ARL_VERSION_CODE})"
           git push origin HEAD:main
 
@@ -167,5 +212,7 @@ jobs:
           name: ARL-APK-${{ inputs.version_name }}-audit
           path: |
             release-output/SHA256SUMS.txt
+            release-output/APKSIGNER.txt
             launcher.json
+            production-state.json
           if-no-files-found: error
