@@ -1,0 +1,17 @@
+{
+  "maintenance": false,
+  "server": {
+    "host": "play.arl-samprpg.site",
+    "port": 7777
+  },
+  "client": {
+    "version": "0.3.7-R3",
+    "data": {
+      "version": "",
+      "url": "",
+      "sha256": "",
+      "bytes": 0,
+      "files": []
+    }
+  }
+}
