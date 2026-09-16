@@ -4,6 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'launcher.json'
+      - 'tools/**'
+      - '.github/workflows/publish-arl-data.yml'
+      - 'docs/**'
+      - 'README.md'
 
 jobs:
   build:
@@ -56,7 +62,7 @@ jobs:
             "ndk;26.2.11394342" \
             "cmake;3.22.1"
 
-      - name: Apply ARL Phase 1 bridge
+      - name: Apply ARL launcher overlay
         run: python3 apply_arl_phase1.py upstream
 
       - name: Apply upstream native build fixes
@@ -70,6 +76,7 @@ jobs:
           grep -q 'pSettings->Get().iPort' upstream/app/src/main/cpp/samp/main.cpp
           ! grep -q 'new CNetGame("94.23.168.153", 2305' upstream/app/src/main/cpp/samp/main.cpp
           grep -q 'Amazing Real Life' upstream/app/src/main/res/values/strings.xml
+          grep -q 'dataManifestReady' upstream/app/src/main/java/com/samp/mobile/launcher/ArlRemoteConfig.java
           grep -q 'samp_widgets/playertablist.h' upstream/app/src/main/cpp/samp/gui/gui.h
           ! grep -q 'samp_widgets/playerTabList.h' upstream/app/src/main/cpp/samp/gui/gui.h
 
