@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:fillViewport="true" android:background="#090B0E">
+  <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+      android:orientation="vertical" android:gravity="center_horizontal" android:padding="28dp">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="AMAZING REAL LIFE" android:textColor="#D8BB57"
+        android:textStyle="bold" android:textSize="28sp" android:gravity="center"/>
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="4dp" android:text="RPG • A SUA VIDA, AS SUAS ESCOLHAS"
+        android:textColor="#8E969F" android:textSize="11sp" android:gravity="center"/>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="26dp" android:orientation="vertical" android:padding="18dp"
+        android:background="@drawable/arl_panel">
+      <TextView android:id="@+id/arl_status" android:layout_width="match_parent"
+          android:layout_height="wrap_content" android:text="CONSULTANDO SERVIDOR..."
+          android:textColor="#65D889" android:textStyle="bold" android:textSize="15sp"/>
+      <TextView android:id="@+id/arl_endpoint" android:layout_width="match_parent"
+          android:layout_height="wrap_content" android:layout_marginTop="5dp"
+          android:text="play.arl-samprpg.site:7777" android:textColor="#C4CAD0" android:textSize="12sp"/>
+      <EditText android:id="@+id/arl_nickname" android:layout_width="match_parent"
+          android:layout_height="54dp" android:layout_marginTop="18dp" android:hint="Seu_Nickname"
+          android:maxLength="24" android:singleLine="true" android:paddingLeft="16dp"
+          android:paddingRight="16dp" android:textColor="#FFFFFF" android:textColorHint="#68717A"
+          android:background="@drawable/arl_input"/>
+      <Button android:id="@+id/arl_play" android:layout_width="match_parent"
+          android:layout_height="58dp" android:layout_marginTop="14dp" android:text="JOGAR AGORA"
+          android:textStyle="bold" android:textColor="#101216" android:textSize="16sp"
+          android:backgroundTint="#D8BB57"/>
+      <Button android:id="@+id/arl_repair" android:layout_width="match_parent"
+          android:layout_height="48dp" android:layout_marginTop="8dp"
+          android:text="VERIFICAR / REPARAR ARQUIVOS" android:textColor="#D7DCE1"
+          android:backgroundTint="#242A30"/>
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="14dp" android:orientation="horizontal">
+      <Button android:id="@+id/arl_discord" android:layout_width="0dp" android:layout_height="48dp"
+          android:layout_weight="1" android:text="DISCORD" android:textColor="#E6E9EC"
+          android:backgroundTint="#181D22"/>
+      <Button android:id="@+id/arl_instagram" android:layout_width="0dp" android:layout_height="48dp"
+          android:layout_marginLeft="6dp" android:layout_weight="1" android:text="INSTAGRAM"
+          android:textColor="#E6E9EC" android:backgroundTint="#181D22"/>
+      <Button android:id="@+id/arl_forum" android:layout_width="0dp" android:layout_height="48dp"
+          android:layout_marginLeft="6dp" android:layout_weight="1" android:text="FÓRUM"
+          android:textColor="#E6E9EC" android:backgroundTint="#181D22"/>
+    </LinearLayout>
+  </LinearLayout>
+</ScrollView>
