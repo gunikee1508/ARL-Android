@@ -7,7 +7,6 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -50,6 +49,8 @@ def safe_version(value: str) -> str:
 
 def clean_rel(path: str) -> str:
     p = path.replace("\\", "/").lstrip("/")
+    while p.startswith("./"):
+        p = p[2:]
     pp = PurePosixPath(p)
     if not p or any(part in ("", ".", "..") for part in pp.parts):
         raise ValueError(f"unsafe path: {path!r}")
@@ -68,9 +69,10 @@ def safe_extract(source: Path, dest: Path) -> None:
     root = dest.resolve()
     with zipfile.ZipFile(source) as zf:
         for info in zf.infolist():
-            rel = clean_rel(info.filename.rstrip("/")) if info.filename.rstrip("/") else ""
-            if not rel:
+            raw = info.filename.rstrip("/")
+            if not raw:
                 continue
+            rel = clean_rel(raw)
             mode = (info.external_attr >> 16) & 0xFFFF
             if mode and stat.S_ISLNK(mode):
                 raise SystemExit(f"symlink not allowed in source ZIP: {rel}")
@@ -94,6 +96,32 @@ def maybe_strip_single_root(root: Path, enabled: bool) -> Path:
     return root
 
 
+def detect_external_files_root(root: Path, strip_single_root: bool) -> Path:
+    """Accept either files-root DATA or a common Android/data/.../files backup."""
+    candidates = [
+        root / "Android" / "data" / "com.samp.mobile" / "files",
+        root / "android" / "data" / "com.samp.mobile" / "files",
+        root / "data" / "com.samp.mobile" / "files",
+        root / "com.samp.mobile" / "files",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+
+    stripped = maybe_strip_single_root(root, strip_single_root)
+    if stripped != root:
+        candidates = [
+            stripped / "Android" / "data" / "com.samp.mobile" / "files",
+            stripped / "android" / "data" / "com.samp.mobile" / "files",
+            stripped / "data" / "com.samp.mobile" / "files",
+            stripped / "com.samp.mobile" / "files",
+        ]
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
+    return stripped
+
+
 def iter_files(root: Path):
     files = []
     for p in root.rglob("*"):
@@ -114,12 +142,12 @@ def build(source: Path, version: str, output: Path, strip_single_root: bool) -> 
     with tempfile.TemporaryDirectory(prefix="arl-data-") as td:
         tmp = Path(td)
         if source.is_dir():
-            root = source.resolve()
+            root = detect_external_files_root(source.resolve(), strip_single_root)
         elif source.is_file() and zipfile.is_zipfile(source):
             unpacked = tmp / "source"
             unpacked.mkdir()
             safe_extract(source, unpacked)
-            root = maybe_strip_single_root(unpacked, strip_single_root)
+            root = detect_external_files_root(unpacked, strip_single_root)
         else:
             raise SystemExit("source must be a directory or ZIP")
 
@@ -175,6 +203,7 @@ def build(source: Path, version: str, output: Path, strip_single_root: bool) -> 
             "schema": 1,
             "version": version,
             "generatedAt": generated,
+            "sourceRoot": root.as_posix(),
             "fileCount": len(manifest_files),
             "package": {
                 "file": package_path.name,
