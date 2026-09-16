@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "signingCertSha256": "",
+  "signingCertSha256": "a1d694751beddc6239d4fb54c40217421cb79d171d6a5e8bb87c44fb917ff50d",
   "active": {
     "app": null,
     "data": null
