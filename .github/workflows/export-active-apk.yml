@@ -1,0 +1,73 @@
+name: Export Active ARL APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/export-active-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Resolve active release
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval "$(python3 - <<'PY'
+          import json, shlex
+          state=json.load(open('production-state.json', encoding='utf-8'))
+          launcher=json.load(open('launcher.json', encoding='utf-8'))
+          active=state.get('active',{}).get('app')
+          if not active:
+              raise SystemExit('No active production APK')
+          rec=next((x for x in state.get('history',{}).get('app',[]) if int(x.get('versionCode',-1))==int(active)), None)
+          if not rec:
+              raise SystemExit('Active APK not found in production history')
+          print('TAG='+shlex.quote(str(rec['tag'])))
+          print('VERSION='+shlex.quote(str(rec['versionName'])))
+          print('EXPECTED_SHA='+shlex.quote(str(rec['sha256'])))
+          print('EXPECTED_BYTES='+shlex.quote(str(rec['bytes'])))
+          if int(launcher['app']['latestVersionCode']) != int(active):
+              raise SystemExit('launcher.json and production-state.json disagree')
+          PY
+          )"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "EXPECTED_SHA=$EXPECTED_SHA" >> "$GITHUB_ENV"
+          echo "EXPECTED_BYTES=$EXPECTED_BYTES" >> "$GITHUB_ENV"
+
+      - name: Download active signed APK from GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          gh release download "$TAG" --pattern '*.apk' --dir export
+          APK="$(find export -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          ACTUAL_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          ACTUAL_BYTES="$(stat -c '%s' "$APK")"
+          test "${ACTUAL_SHA,,}" = "${EXPECTED_SHA,,}"
+          test "$ACTUAL_BYTES" = "$EXPECTED_BYTES"
+          sha256sum "$APK" > export/SHA256SUMS.txt
+          echo "Verified active signed APK $VERSION ($ACTUAL_BYTES bytes)"
+
+      - name: Upload official APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Android-official-${{ env.VERSION }}
+          path: export/*
+          if-no-files-found: error
