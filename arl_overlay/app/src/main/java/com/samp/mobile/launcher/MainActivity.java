@@ -34,10 +34,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
+    private static final int REQUEST_GTA_BASE_TREE = 4106;
+
     private EditText nickname;
-    private TextView endpoint, status, dataStatus, appUpdateStatus;
-    private Button playButton, repairButton, appUpdateButton;
-    private ProgressBar dataProgress, appUpdateProgress;
+    private TextView endpoint, status, baseStatus, dataStatus, appUpdateStatus;
+    private Button playButton, baseImportButton, repairButton, appUpdateButton;
+    private ProgressBar baseProgress, dataProgress, appUpdateProgress;
+    private boolean baseBusy = false;
     private boolean dataBusy = false;
     private boolean appBusy = false;
     private boolean remoteReady = false;
@@ -58,6 +61,9 @@ public class MainActivity extends AppCompatActivity {
         nickname = findViewById(R.id.arl_nickname);
         endpoint = findViewById(R.id.arl_endpoint);
         status = findViewById(R.id.arl_status);
+        baseStatus = findViewById(R.id.arl_base_status);
+        baseProgress = findViewById(R.id.arl_base_progress);
+        baseImportButton = findViewById(R.id.arl_base_import);
         dataStatus = findViewById(R.id.arl_data_status);
         dataProgress = findViewById(R.id.arl_data_progress);
         appUpdateStatus = findViewById(R.id.arl_app_update_status);
@@ -71,12 +77,14 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.arl_discord).setOnClickListener(v -> open(ArlConfig.DISCORD));
         findViewById(R.id.arl_instagram).setOnClickListener(v -> open(ArlConfig.INSTAGRAM));
         findViewById(R.id.arl_forum).setOnClickListener(v -> open(ArlConfig.FORUM));
+        baseImportButton.setOnClickListener(v -> chooseGtaBaseFolder());
         repairButton.setOnClickListener(v -> beginRepair(false));
         appUpdateButton.setOnClickListener(v -> beginAppUpdate());
         playButton.setOnClickListener(v -> play());
 
         endpoint.setText(ArlConfig.DEFAULT_HOST + ":" + ArlConfig.DEFAULT_PORT);
         status.setText("CONSULTANDO SERVIDOR...");
+        baseProgress.setVisibility(View.GONE);
         dataStatus.setText("VERIFICANDO DATA...");
         dataProgress.setVisibility(View.GONE);
         appUpdateStatus.setVisibility(View.GONE);
@@ -84,10 +92,13 @@ public class MainActivity extends AppCompatActivity {
         appUpdateButton.setVisibility(View.GONE);
         playButton.setEnabled(false);
 
+        refreshBaseState();
+
         ArlRemoteConfig.refresh(this, () -> {
             remoteReady = true;
             endpoint.setText(ArlRemoteConfig.host() + ":" + ArlRemoteConfig.port());
             refreshAppUpdateState();
+            refreshBaseState();
             refreshDataState();
 
             if(ArlRemoteConfig.maintenance()) status.setText("MANUTENÇÃO");
@@ -106,6 +117,87 @@ public class MainActivity extends AppCompatActivity {
             String nick = new Wini(settingsFile()).get("client", "name");
             if(nick != null && !nick.trim().isEmpty()) nickname.setText(nick.trim());
         } catch(Exception ignored) {}
+    }
+
+    private void refreshBaseState() {
+        if(baseBusy) return;
+        boolean ready = ArlBaseImportManager.isBaseReady(this);
+        baseProgress.setVisibility(View.GONE);
+        baseImportButton.setVisibility(ready ? View.GONE : View.VISIBLE);
+        baseImportButton.setEnabled(!baseBusy);
+        if(ready) {
+            int files = ArlBaseImportManager.importedFiles(this);
+            long bytes = ArlBaseImportManager.importedBytes(this);
+            String detail = files > 0 ? " • " + files + " ARQUIVOS" : "";
+            if(bytes > 0) detail += " IMPORTADOS";
+            baseStatus.setText("BASE GTA SA PRONTA" + detail);
+            baseStatus.setTextColor(0xFF65D889);
+        } else {
+            baseStatus.setText("BASE GTA SA AUSENTE • IMPORTE UMA CÓPIA LEGÍTIMA");
+            baseStatus.setTextColor(0xFFF0C95C);
+        }
+        updatePlayEnabled();
+    }
+
+    private void chooseGtaBaseFolder() {
+        if(baseBusy) return;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        Toast.makeText(this,
+                "Selecione a pasta 'files' da sua instalação/cópia legítima do GTA SA.",
+                Toast.LENGTH_LONG).show();
+        startActivityForResult(intent, REQUEST_GTA_BASE_TREE);
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if(requestCode != REQUEST_GTA_BASE_TREE || resultCode != Activity.RESULT_OK || data == null) return;
+        Uri uri = data.getData();
+        if(uri == null) return;
+        try {
+            int flags = data.getFlags() &
+                    (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            getContentResolver().takePersistableUriPermission(uri, flags & Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch(Exception ignored) {}
+        beginBaseImport(uri);
+    }
+
+    private void beginBaseImport(Uri uri) {
+        if(baseBusy) return;
+        baseBusy = true;
+        baseStatus.setTextColor(0xFFD8BB57);
+        baseStatus.setText("PREPARANDO IMPORTAÇÃO DA BASE...");
+        baseProgress.setVisibility(View.VISIBLE);
+        baseProgress.setIndeterminate(false);
+        baseProgress.setProgress(0);
+        baseImportButton.setEnabled(false);
+        updatePlayEnabled();
+
+        ArlBaseImportManager.importTree(this, uri, new ArlBaseImportManager.Listener() {
+            @Override public void onState(String text) {
+                baseStatus.setText(text);
+            }
+
+            @Override public void onProgress(int percent, String text) {
+                baseProgress.setProgress(percent);
+                baseStatus.setText(text + " • " + percent + "%");
+            }
+
+            @Override public void onComplete(boolean success, String message) {
+                baseBusy = false;
+                baseProgress.setVisibility(View.GONE);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                refreshBaseState();
+                refreshDataState();
+                updatePlayEnabled();
+
+                if(success && ArlDataManager.isConfigured() && ArlDataManager.requiresRepair(MainActivity.this)) {
+                    beginRepair(false);
+                }
+            }
+        });
     }
 
     private void refreshAppUpdateState() {
@@ -185,8 +277,15 @@ public class MainActivity extends AppCompatActivity {
     private void refreshDataState() {
         if(dataBusy) return;
 
+        if(!ArlBaseImportManager.isBaseReady(this)) {
+            dataStatus.setText("OVERLAY ARL AGUARDANDO BASE GTA SA");
+            repairButton.setEnabled(false);
+            updatePlayEnabled();
+            return;
+        }
+
         if(!ArlRemoteConfig.hasDataRelease()) {
-            dataStatus.setText("DATA LOCAL • PACOTE REMOTO AINDA NÃO PUBLICADO");
+            dataStatus.setText("OVERLAY ARL LOCAL • PACOTE REMOTO AINDA NÃO PUBLICADO");
             repairButton.setEnabled(false);
             updatePlayEnabled();
             return;
@@ -209,18 +308,24 @@ public class MainActivity extends AppCompatActivity {
         repairButton.setEnabled(true);
         if(ArlDataManager.requiresRepair(this)) {
             String version = ArlRemoteConfig.dataVersion();
-            dataStatus.setText("ATUALIZAÇÃO DE ARQUIVOS NECESSÁRIA" +
+            dataStatus.setText("ATUALIZAÇÃO ARL NECESSÁRIA" +
                     (version.isEmpty() ? "" : " • " + version));
         } else {
             String installed = ArlDataManager.installedVersion(this);
-            dataStatus.setText("DATA VERIFICADA" +
+            dataStatus.setText("ARQUIVOS ARL VERIFICADOS" +
                     (installed.isEmpty() ? "" : " • " + installed));
         }
         updatePlayEnabled();
     }
 
     private void beginRepair(boolean force) {
-        if(dataBusy) return;
+        if(dataBusy || baseBusy) return;
+
+        if(!ArlBaseImportManager.isBaseReady(this)) {
+            Toast.makeText(this, "Importe primeiro a base legítima do GTA SA.", Toast.LENGTH_LONG).show();
+            chooseGtaBaseFolder();
+            return;
+        }
 
         if(ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
             Toast.makeText(this,
@@ -231,7 +336,7 @@ public class MainActivity extends AppCompatActivity {
 
         if(!ArlDataManager.isConfigured()) {
             Toast.makeText(this,
-                    "O pacote DATA ainda não está configurado no launcher.json.",
+                    "O pacote ARL ainda não está configurado no launcher.json.",
                     Toast.LENGTH_LONG).show();
             return;
         }
@@ -271,6 +376,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean dataBlocksPlay() {
+        if(!ArlBaseImportManager.isBaseReady(this)) return true;
         if(!ArlRemoteConfig.hasDataRelease()) return false;
         if(!ArlRemoteConfig.dataManifestReady()) return true;
         if(!ArlDataManager.isConfigured()) return true;
@@ -280,6 +386,7 @@ public class MainActivity extends AppCompatActivity {
     private void updatePlayEnabled() {
         boolean enabled = remoteReady
                 && !ArlRemoteConfig.maintenance()
+                && !baseBusy
                 && !dataBusy
                 && !appBusy
                 && !dataBlocksPlay()
@@ -288,8 +395,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void play() {
-        if(dataBusy || appBusy) {
-            Toast.makeText(this, "Aguarde a atualização em andamento.", Toast.LENGTH_LONG).show();
+        if(baseBusy || dataBusy || appBusy) {
+            Toast.makeText(this, "Aguarde a operação em andamento.", Toast.LENGTH_LONG).show();
             return;
         }
         if(ArlRemoteConfig.maintenance()) {
@@ -299,6 +406,11 @@ public class MainActivity extends AppCompatActivity {
         if(ArlAppUpdateManager.updateRequired(this)) {
             Toast.makeText(this, "Atualize o launcher antes de jogar.", Toast.LENGTH_LONG).show();
             beginAppUpdate();
+            return;
+        }
+        if(!ArlBaseImportManager.isBaseReady(this)) {
+            Toast.makeText(this, "Importe a base legítima do GTA SA antes de jogar.", Toast.LENGTH_LONG).show();
+            chooseGtaBaseFolder();
             return;
         }
         if(ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
