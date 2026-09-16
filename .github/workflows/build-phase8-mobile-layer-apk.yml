@@ -1,4 +1,4 @@
-name: Phase 8 - Build Runtime APK
+name: Phase 8 - Build Complete Bundled APK
 
 on:
   workflow_dispatch:
@@ -7,27 +7,65 @@ on:
       - phase8-mobile-layer-runtime
     paths:
       - arl_overlay/app/src/main/cpp/samp/arl/**
+      - arl_overlay/app/src/main/java/com/samp/mobile/launcher/ArlEmbeddedDataManager.java
       - tools/patch_arl_brasil_runtime.py
+      - tools/patch_phase8_embedded_bootstrap.py
       - apply_arl_phase1.py
       - fix_upstream_native.py
       - .github/workflows/build-phase8-mobile-layer-apk.yml
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      ARL_VERSION_CODE: '108'
-      ARL_VERSION_NAME: '1.0.2-phase8'
+      ARL_VERSION_CODE: '109'
+      ARL_VERSION_NAME: '1.0.2-phase8-bundled'
+      PHASE8_DATA_RUN_ID: '35151353048'
+      PHASE8_DATA_PACKAGE_BYTES: '428375058'
+      PHASE8_DATA_PACKAGE_SHA256: '6107f9da7a83e304de3d749b8ae70cb9ef563f634df04d88c9161a9fcb7d4889'
 
     steps:
       - name: Checkout ARL patch repo
         uses: actions/checkout@v5
+
+      - name: Download validated GTA Brasil ARL DATA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phase8-gta-brasil-arl-data
+          path: phase8-data
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.PHASE8_DATA_RUN_ID }}
+
+      - name: Verify downloaded Phase 8 DATA artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.zip' -print -quit)"
+          MANIFEST="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.manifest.json' -print -quit)"
+          META="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.meta.json' -print -quit)"
+          test -n "$PACKAGE" && test -n "$MANIFEST" && test -n "$META"
+          test "$(stat -c %s "$PACKAGE")" = "$PHASE8_DATA_PACKAGE_BYTES"
+          echo "$PHASE8_DATA_PACKAGE_SHA256  $PACKAGE" | sha256sum -c -
+          python3 - "$MANIFEST" "$META" <<'PY'
+          import json, sys
+          manifest = json.load(open(sys.argv[1], encoding='utf-8'))
+          meta = json.load(open(sys.argv[2], encoding='utf-8'))
+          assert manifest['version'] == meta['version'] == 'phase8-gta-brasil-6417354'
+          assert len(manifest['files']) == meta['fileCount'] == 8558
+          paths = {f['path'] for f in manifest['files']}
+          assert 'arlbrasil/arlbrasil.img' in paths
+          assert 'texdb/arlbrasil/arlbrasil.txt' in paths
+          assert sum(p.startswith('texdb/arlbrasil/src/') and p.endswith('.png') for p in paths) == 8552
+          print('Validated Phase 8 DATA artifact:', meta['version'], meta['fileCount'], 'files')
+          PY
 
       - name: Checkout SAMP-Mobile GTA-2.10
         uses: actions/checkout@v5
@@ -72,49 +110,112 @@ jobs:
       - name: Wire Phase 8 native mobile layer
         run: python3 tools/patch_arl_brasil_runtime.py upstream
 
+      - name: Wire Phase 8 embedded bootstrap
+        run: python3 tools/patch_phase8_embedded_bootstrap.py upstream
+
       - name: Apply upstream native build fixes
         run: python3 fix_upstream_native.py upstream
 
-      - name: Verify Phase 8 invariants
+      - name: Embed verified GTA Brasil DATA inside APK assets
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p upstream/app/src/main/assets/arl
+          PACKAGE="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.zip' -print -quit)"
+          MANIFEST="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.manifest.json' -print -quit)"
+          META="$(find phase8-data -maxdepth 1 -type f -name 'arl-data-*.meta.json' -print -quit)"
+          cp "$PACKAGE" upstream/app/src/main/assets/arl/embedded-data.zip
+          cp "$MANIFEST" upstream/app/src/main/assets/arl/embedded-data.manifest.json
+          cp "$META" upstream/app/src/main/assets/arl/embedded-data.meta.json
+          test "$(stat -c %s upstream/app/src/main/assets/arl/embedded-data.zip)" = "$PHASE8_DATA_PACKAGE_BYTES"
+          echo "$PHASE8_DATA_PACKAGE_SHA256  upstream/app/src/main/assets/arl/embedded-data.zip" | sha256sum -c -
+
+      - name: Verify Phase 8 source invariants
+        shell: bash
+        run: |
+          set -euo pipefail
           test -f upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
           test -f upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.h
+          test -f upstream/app/src/main/java/com/samp/mobile/launcher/ArlEmbeddedDataManager.java
           grep -q '#include "arl/ArlBrasilLayer.h"' upstream/app/src/main/cpp/samp/main.cpp
           grep -q 'ArlBrasilLayer::InstallHooks();' upstream/app/src/main/cpp/samp/main.cpp
           grep -q 'ArlBrasilLayer::Tick();' upstream/app/src/main/cpp/samp/main.cpp
           grep -q 'CStreaming::AddImageToList(kImgRelative, true)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
           grep -q 'TextureDatabaseRuntime::Load(kDbName, true, DF_UNC)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
-          grep -q 'versionCode 108' upstream/app/build.gradle
-          grep -q 'versionName "1.0.2-phase8"' upstream/app/build.gradle
+          grep -q 'ArlEmbeddedDataManager.installIfNeeded' upstream/app/src/main/java/com/samp/mobile/launcher/SplashActivity.java
+          grep -q 'GTA BRASIL EMBUTIDO' upstream/app/src/main/java/com/samp/mobile/launcher/MainActivity.java
+          grep -q 'versionCode 109' upstream/app/build.gradle
+          grep -q 'versionName "1.0.2-phase8-bundled"' upstream/app/build.gradle
 
       - name: Make Gradle executable
         run: chmod +x upstream/gradlew
 
-      - name: Build Phase 8 debug APK
+      - name: Build complete Phase 8 debug APK
         working-directory: upstream
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g
         run: ./gradlew --stacktrace --no-daemon assembleDebug
 
-      - name: Collect APK
+      - name: Validate bundled package inside built APK
         shell: bash
         run: |
+          set -euo pipefail
+          APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          python3 - "$APK" "$PHASE8_DATA_PACKAGE_BYTES" "$PHASE8_DATA_PACKAGE_SHA256" <<'PY'
+          import hashlib, json, sys, zipfile
+          apk, expected_bytes, expected_sha = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+          with zipfile.ZipFile(apk) as z:
+              names = set(z.namelist())
+              required = {
+                  'assets/arl/embedded-data.zip',
+                  'assets/arl/embedded-data.manifest.json',
+                  'assets/arl/embedded-data.meta.json',
+              }
+              assert required <= names, required - names
+              info = z.getinfo('assets/arl/embedded-data.zip')
+              assert info.file_size == expected_bytes, (info.file_size, expected_bytes)
+              h = hashlib.sha256()
+              with z.open(info) as f:
+                  while True:
+                      chunk = f.read(1024 * 1024)
+                      if not chunk: break
+                      h.update(chunk)
+              assert h.hexdigest() == expected_sha, h.hexdigest()
+              meta = json.loads(z.read('assets/arl/embedded-data.meta.json'))
+              assert meta['version'] == 'phase8-gta-brasil-6417354'
+              assert meta['package']['sha256'] == expected_sha
+          print('APK bundled GTA Brasil validation: OK')
+          PY
+
+      - name: Collect complete APK
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p output
-          find upstream/app/build/outputs/apk -type f -name '*.apk' -print -exec cp {} output/ \;
-          test -n "$(find output -type f -name '*.apk' -print -quit)"
+          APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
+          cp "$APK" output/ARL-Android-1.0.2-phase8-bundled-debug.apk
           sha256sum output/*.apk | tee output/SHA256SUMS.txt
+          stat -c 'APK bytes: %s' output/*.apk | tee output/APK_SIZE.txt
           cat > output/PHASE8.txt <<'TXT'
-          Experimental Phase 8 build.
-          Native runtime understands the optional external layer:
-            arlbrasil/arlbrasil.img
-            texdb/arlbrasil/arlbrasil.txt
-            texdb/arlbrasil/src/*.png
-          Production 1.0.1 is not modified by this workflow.
+          ARL Android 1.0.2-phase8-bundled
+
+          Experimental complete Phase 8 build.
+          - GTA Brasil converted layer is bundled inside the APK.
+          - No GTA Brasil ZIP/artifact needs to be selected by the player.
+          - On first run, after a legitimate GTA SA Android base is detected/imported,
+            the launcher verifies and installs the bundled layer automatically.
+          - Native runtime loads arlbrasil/arlbrasil.img and texdb/arlbrasil.
+          - ASI/DLL/EXE/CLEO PC payloads are not included.
+          - Stock GTA3.IMG/GTA_INT.IMG are not overwritten by the GTA Brasil layer.
+          - Production 1.0.1 remains untouched.
           TXT
 
-      - name: Upload Phase 8 APK
+      - name: Upload complete Phase 8 APK
         uses: actions/upload-artifact@v4
         with:
-          name: ARL-Android-phase8-runtime-debug
+          name: ARL-Android-1.0.2-phase8-bundled-debug
           path: output/*
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
