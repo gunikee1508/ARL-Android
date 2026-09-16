@@ -12,6 +12,7 @@ import android.provider.DocumentsContract;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -19,11 +20,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
- * Imports a user-selected, legitimately obtained GTA SA Android data tree into
- * ARL's app-private external-files directory. No proprietary GTA data is bundled
- * or downloaded by the ARL launcher.
+ * Imports a user-selected, legitimately obtained GTA SA Android data tree or ZIP
+ * into ARL's app-private external-files directory. No proprietary GTA data is
+ * bundled or downloaded by the ARL launcher.
  */
 public final class ArlBaseImportManager {
     public interface Listener {
@@ -40,6 +43,7 @@ public final class ArlBaseImportManager {
     private static final int BUFFER = 64 * 1024;
     private static final int MAX_DEPTH = 32;
     private static final int MAX_FILES = 250000;
+    private static final long MAX_UNPACKED_BYTES = 16L * 1024L * 1024L * 1024L;
 
     private static final Set<String> SKIP_NAMES = new HashSet<>();
     static {
@@ -84,7 +88,7 @@ public final class ArlBaseImportManager {
                 String gameRootId = findGameRoot(resolver, selectedTree, selectedId);
                 if (gameRootId == null) {
                     complete(listener, false,
-                            "Essa pasta não parece conter a DATA do GTA SA. Selecione a pasta 'files' da sua instalação/cópia legítima do jogo.");
+                            "Essa pasta não parece conter a DATA do GTA SA. Selecione a pasta 'files' ou importe um ZIP de backup legítimo.");
                     return;
                 }
 
@@ -99,18 +103,7 @@ public final class ArlBaseImportManager {
                 CopyStats copied = new CopyStats(scan.files, scan.bytes);
                 state(listener, "IMPORTANDO BASE GTA SA...");
                 copyTree(resolver, selectedTree, gameRootId, destination, copied, 0, listener);
-
-                if (!looksLikeInstalledBase(destination))
-                    throw new IllegalStateException("estrutura mínima do GTA SA não foi encontrada após a importação");
-
-                prefs(app).edit()
-                        .putBoolean(KEY_READY, true)
-                        .putInt(KEY_FILES, copied.copiedFiles)
-                        .putLong(KEY_BYTES, copied.copiedBytes)
-                        .apply();
-                progress(listener, 100, "BASE GTA SA PRONTA");
-                complete(listener, true,
-                        "Base GTA SA importada: " + copied.copiedFiles + " arquivos • " + human(copied.copiedBytes) + ".");
+                finishImport(app, copied, listener);
             } catch (Exception e) {
                 prefs(app).edit().putBoolean(KEY_READY, false).apply();
                 complete(listener, false, "Falha ao importar base GTA SA: " + readable(e));
@@ -118,19 +111,149 @@ public final class ArlBaseImportManager {
         }, "ARL-Base-Importer").start();
     }
 
+    public static void importZip(Context context, Uri zipUri, Listener listener) {
+        final Context app = context.getApplicationContext();
+        new Thread(() -> {
+            File stage = null;
+            try {
+                if (zipUri == null) throw new IllegalArgumentException("ZIP não selecionado");
+                File root = app.getExternalFilesDir(null);
+                if (root == null) throw new IllegalStateException("armazenamento indisponível");
+                File work = new File(root, "download/base_import");
+                stage = new File(work, "stage");
+                deleteTree(work);
+                if (!stage.mkdirs() && !stage.isDirectory())
+                    throw new IllegalStateException("não foi possível criar pasta temporária");
+
+                state(listener, "EXTRAINDO BACKUP GTA SA...");
+                unzipSafely(app.getContentResolver(), zipUri, stage, listener);
+
+                File gameRoot = findFilesystemGameRoot(stage);
+                if (gameRoot == null)
+                    throw new IllegalStateException("o ZIP não contém uma estrutura reconhecida de DATA GTA SA");
+
+                state(listener, "VALIDANDO BACKUP GTA SA...");
+                Scan scan = scanLocal(gameRoot, 0);
+                if (scan.files <= 0 || scan.bytes <= 0)
+                    throw new IllegalStateException("o ZIP não contém arquivos utilizáveis");
+
+                CopyStats copied = new CopyStats(scan.files, scan.bytes);
+                state(listener, "IMPORTANDO BASE GTA SA...");
+                copyLocalTree(gameRoot, root, copied, 0, listener);
+                finishImport(app, copied, listener);
+                deleteTree(work);
+            } catch (Exception e) {
+                prefs(app).edit().putBoolean(KEY_READY, false).apply();
+                complete(listener, false, "Falha ao importar ZIP GTA SA: " + readable(e));
+                if (stage != null) deleteTree(stage.getParentFile());
+            }
+        }, "ARL-Base-Zip-Importer").start();
+    }
+
+    private static void finishImport(Context app, CopyStats copied, Listener listener) {
+        File destination = app.getExternalFilesDir(null);
+        if (!looksLikeInstalledBase(destination))
+            throw new IllegalStateException("estrutura mínima do GTA SA não foi encontrada após a importação");
+
+        prefs(app).edit()
+                .putBoolean(KEY_READY, true)
+                .putInt(KEY_FILES, copied.copiedFiles)
+                .putLong(KEY_BYTES, copied.copiedBytes)
+                .apply();
+        progress(listener, 100, "BASE GTA SA PRONTA");
+        complete(listener, true,
+                "Base GTA SA importada: " + copied.copiedFiles + " arquivos • " + human(copied.copiedBytes) + ".");
+    }
+
+    private static void unzipSafely(ContentResolver resolver, Uri zipUri, File stage, Listener listener)
+            throws Exception {
+        String stageCanonical = stage.getCanonicalPath();
+        String rootPath = stageCanonical + File.separator;
+        long unpacked = 0L;
+        int entries = 0;
+
+        try (InputStream raw = resolver.openInputStream(zipUri)) {
+            if (raw == null) throw new IllegalStateException("não foi possível abrir o ZIP selecionado");
+            try (ZipInputStream zis = new ZipInputStream(new BufferedInputStream(raw, BUFFER))) {
+                ZipEntry entry;
+                byte[] buf = new byte[BUFFER];
+                while ((entry = zis.getNextEntry()) != null) {
+                    if (++entries > MAX_FILES) throw new SecurityException("ZIP contém arquivos demais");
+                    String rawName = entry.getName() == null ? "" : entry.getName().replace('\\', '/');
+                    while (rawName.startsWith("./")) rawName = rawName.substring(2);
+                    if (rawName.isEmpty()) { zis.closeEntry(); continue; }
+                    if (rawName.startsWith("/") || rawName.contains("../") || rawName.equals(".."))
+                        throw new SecurityException("caminho inválido no ZIP");
+
+                    File out = new File(stage, rawName);
+                    String outPath = out.getCanonicalPath();
+                    if (!outPath.equals(stageCanonical) && !outPath.startsWith(rootPath))
+                        throw new SecurityException("ZIP tentou sair da pasta temporária");
+
+                    if (entry.isDirectory()) {
+                        if (!out.mkdirs() && !out.isDirectory())
+                            throw new IllegalStateException("não foi possível criar pasta do ZIP");
+                    } else if (!shouldSkip(out.getName())) {
+                        File parent = out.getParentFile();
+                        if (parent != null && !parent.mkdirs() && !parent.isDirectory())
+                            throw new IllegalStateException("não foi possível criar pasta do ZIP");
+                        try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(out), BUFFER)) {
+                            int n;
+                            while ((n = zis.read(buf)) != -1) {
+                                unpacked += n;
+                                if (unpacked > MAX_UNPACKED_BYTES)
+                                    throw new SecurityException("ZIP expandido excedeu o limite de segurança");
+                                bos.write(buf, 0, n);
+                            }
+                        }
+                    }
+                    zis.closeEntry();
+                    if (entries % 20 == 0) {
+                        int p = Math.min(35, 1 + entries / 20);
+                        progress(listener, p, "EXTRAINDO • " + entries + " ITENS • " + human(unpacked));
+                    }
+                }
+            }
+        }
+        if (entries == 0) throw new IllegalStateException("ZIP vazio");
+    }
+
+    private static File findFilesystemGameRoot(File root) {
+        if (looksLikeInstalledBase(root)) return root;
+        File files = childDir(root, "files");
+        if (files != null && looksLikeInstalledBase(files)) return files;
+
+        File android = childDir(root, "Android");
+        File data = childDir(android, "data");
+        if (data != null) {
+            File rockstar = childDir(data, "com.rockstargames.gtasa");
+            File rockstarFiles = childDir(rockstar, "files");
+            if (rockstarFiles != null && looksLikeInstalledBase(rockstarFiles)) return rockstarFiles;
+            File samp = childDir(data, "com.samp.mobile");
+            File sampFiles = childDir(samp, "files");
+            if (sampFiles != null && looksLikeInstalledBase(sampFiles)) return sampFiles;
+        }
+
+        File[] children = root.listFiles();
+        if (children != null && children.length == 1 && children[0].isDirectory()) {
+            File nested = children[0];
+            if (looksLikeInstalledBase(nested)) return nested;
+            files = childDir(nested, "files");
+            if (files != null && looksLikeInstalledBase(files)) return files;
+        }
+        return null;
+    }
+
     private static String findGameRoot(ContentResolver resolver, Uri treeUri, String selectedId) {
         if (looksLikeSourceRoot(resolver, treeUri, selectedId)) return selectedId;
-
         String files = childDirId(resolver, treeUri, selectedId, "files");
         if (files != null && looksLikeSourceRoot(resolver, treeUri, files)) return files;
-
         String android = childDirId(resolver, treeUri, selectedId, "Android");
         String data = childDirId(resolver, treeUri, android, "data");
         if (data != null) {
             String rockstar = childDirId(resolver, treeUri, data, "com.rockstargames.gtasa");
             String rockstarFiles = childDirId(resolver, treeUri, rockstar, "files");
             if (rockstarFiles != null && looksLikeSourceRoot(resolver, treeUri, rockstarFiles)) return rockstarFiles;
-
             String samp = childDirId(resolver, treeUri, data, "com.samp.mobile");
             String sampFiles = childDirId(resolver, treeUri, samp, "files");
             if (sampFiles != null && looksLikeSourceRoot(resolver, treeUri, sampFiles)) return sampFiles;
@@ -206,6 +329,26 @@ public final class ArlBaseImportManager {
         return out;
     }
 
+    private static Scan scanLocal(File root, int depth) {
+        if (depth > MAX_DEPTH) throw new IllegalStateException("estrutura de pastas profunda demais");
+        Scan out = new Scan();
+        File[] files = root.listFiles();
+        if (files == null) return out;
+        for (File file : files) {
+            if (shouldSkip(file.getName())) continue;
+            if (file.isDirectory()) {
+                Scan nested = scanLocal(file, depth + 1);
+                out.files += nested.files;
+                out.bytes += nested.bytes;
+            } else if (file.isFile()) {
+                out.files++;
+                out.bytes += Math.max(0L, file.length());
+                if (out.files > MAX_FILES) throw new IllegalStateException("arquivos demais no ZIP");
+            }
+        }
+        return out;
+    }
+
     private static void copyTree(ContentResolver resolver, Uri treeUri, String docId, File destination,
                                  CopyStats stats, int depth, Listener listener) throws Exception {
         if (depth > MAX_DEPTH) throw new IllegalStateException("estrutura de pastas profunda demais");
@@ -213,7 +356,6 @@ public final class ArlBaseImportManager {
             String name = safeName(child.name);
             if (name.isEmpty() || shouldSkip(name)) continue;
             File dst = new File(destination, name);
-
             if (child.directory) {
                 if (!dst.mkdirs() && !dst.isDirectory())
                     throw new IllegalStateException("não foi possível criar " + name);
@@ -221,17 +363,40 @@ public final class ArlBaseImportManager {
             } else {
                 Uri documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.id);
                 copyFile(resolver, documentUri, dst);
-                stats.copiedFiles++;
-                stats.copiedBytes += Math.max(0L, dst.length());
-                int percent = stats.totalBytes > 0
-                        ? (int)Math.min(99, (stats.copiedBytes * 100L) / stats.totalBytes)
-                        : (int)Math.min(99, (stats.copiedFiles * 100L) / Math.max(1, stats.totalFiles));
-                if (percent != stats.lastPercent) {
-                    stats.lastPercent = percent;
-                    progress(listener, percent,
-                            "IMPORTANDO • " + stats.copiedFiles + "/" + stats.totalFiles + " • " + human(stats.copiedBytes));
-                }
+                accountCopy(dst, stats, listener);
             }
+        }
+    }
+
+    private static void copyLocalTree(File source, File destination, CopyStats stats,
+                                      int depth, Listener listener) throws Exception {
+        if (depth > MAX_DEPTH) throw new IllegalStateException("estrutura de pastas profunda demais");
+        File[] files = source.listFiles();
+        if (files == null) return;
+        for (File src : files) {
+            if (shouldSkip(src.getName())) continue;
+            File dst = new File(destination, src.getName());
+            if (src.isDirectory()) {
+                if (!dst.mkdirs() && !dst.isDirectory())
+                    throw new IllegalStateException("não foi possível criar " + dst.getName());
+                copyLocalTree(src, dst, stats, depth + 1, listener);
+            } else if (src.isFile()) {
+                copyLocalFile(src, dst);
+                accountCopy(dst, stats, listener);
+            }
+        }
+    }
+
+    private static void accountCopy(File dst, CopyStats stats, Listener listener) {
+        stats.copiedFiles++;
+        stats.copiedBytes += Math.max(0L, dst.length());
+        int percent = stats.totalBytes > 0
+                ? (int)Math.min(99, 35L + (stats.copiedBytes * 64L) / stats.totalBytes)
+                : (int)Math.min(99, 35L + (stats.copiedFiles * 64L) / Math.max(1, stats.totalFiles));
+        if (percent != stats.lastPercent) {
+            stats.lastPercent = percent;
+            progress(listener, percent,
+                    "IMPORTANDO • " + stats.copiedFiles + "/" + stats.totalFiles + " • " + human(stats.copiedBytes));
         }
     }
 
@@ -241,7 +406,6 @@ public final class ArlBaseImportManager {
             throw new IllegalStateException("não foi possível criar pasta de destino");
         File tmp = new File(destination.getAbsolutePath() + ".arlimport");
         if (tmp.exists()) tmp.delete();
-
         try (InputStream raw = resolver.openInputStream(source)) {
             if (raw == null) throw new IllegalStateException("não foi possível ler um arquivo selecionado");
             try (BufferedInputStream in = new BufferedInputStream(raw, BUFFER);
@@ -254,7 +418,28 @@ public final class ArlBaseImportManager {
                 fos.getFD().sync();
             }
         }
+        finishAtomic(tmp, destination);
+    }
 
+    private static void copyLocalFile(File source, File destination) throws Exception {
+        File parent = destination.getParentFile();
+        if (parent != null && !parent.mkdirs() && !parent.isDirectory())
+            throw new IllegalStateException("não foi possível criar pasta de destino");
+        File tmp = new File(destination.getAbsolutePath() + ".arlimport");
+        if (tmp.exists()) tmp.delete();
+        try (BufferedInputStream in = new BufferedInputStream(new FileInputStream(source), BUFFER);
+             FileOutputStream fos = new FileOutputStream(tmp);
+             BufferedOutputStream out = new BufferedOutputStream(fos, BUFFER)) {
+            byte[] buf = new byte[BUFFER];
+            int n;
+            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+            out.flush();
+            fos.getFD().sync();
+        }
+        finishAtomic(tmp, destination);
+    }
+
+    private static void finishAtomic(File tmp, File destination) {
         if (destination.exists() && !destination.delete())
             throw new IllegalStateException("não foi possível substituir " + destination.getName());
         if (!tmp.renameTo(destination))
@@ -271,17 +456,22 @@ public final class ArlBaseImportManager {
         return texdb && (data || models || audio || samp);
     }
 
-    private static boolean dirExistsIgnoreCase(File root, String name) {
+    private static File childDir(File root, String name) {
+        if (root == null || !root.isDirectory()) return null;
         File[] files = root.listFiles();
-        if (files == null) return false;
+        if (files == null) return null;
         for (File file : files) {
-            if (file.isDirectory() && file.getName().equalsIgnoreCase(name)) return true;
+            if (file.isDirectory() && file.getName().equalsIgnoreCase(name)) return file;
         }
-        return false;
+        return null;
+    }
+
+    private static boolean dirExistsIgnoreCase(File root, String name) {
+        return childDir(root, name) != null;
     }
 
     private static boolean shouldSkip(String name) {
-        return SKIP_NAMES.contains(name.toLowerCase(Locale.US));
+        return name != null && SKIP_NAMES.contains(name.toLowerCase(Locale.US));
     }
 
     private static String safeName(String raw) {
@@ -289,6 +479,15 @@ public final class ArlBaseImportManager {
         String n = raw.trim();
         if (n.isEmpty() || n.equals(".") || n.equals("..") || n.contains("/") || n.contains("\\")) return "";
         return n;
+    }
+
+    private static void deleteTree(File file) {
+        if (file == null || !file.exists()) return;
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) for (File child : children) deleteTree(child);
+        }
+        file.delete();
     }
 
     private static SharedPreferences prefs(Context context) {
