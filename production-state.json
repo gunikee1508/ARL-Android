@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "signingCertSha256": "",
+  "active": {
+    "app": null,
+    "data": null
+  },
+  "history": {
+    "app": [],
+    "data": []
+  }
+}
