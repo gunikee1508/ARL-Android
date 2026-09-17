@@ -3,7 +3,6 @@ set -euo pipefail
 
 PKG="com.samp.mobile"
 SPLASH="com.samp.mobile/.launcher.SplashActivity"
-MAIN_COMPONENT="com.samp.mobile/.launcher.MainActivity"
 ROOT="/sdcard/Android/data/${PKG}/files"
 OUT="${GITHUB_WORKSPACE:-.}/emulator-output"
 mkdir -p "$OUT"
@@ -35,7 +34,6 @@ is_main_visible() {
     return 0
   fi
 
-  # Last-resort signal: ActivityTaskManager reports the launcher as displayed.
   grep -Eq 'Displayed com\.samp\.mobile/\.launcher\.MainActivity|START .*cmp=com\.samp\.mobile/\.launcher\.MainActivity' "$OUT/logcat.txt" 2>/dev/null
 }
 
@@ -53,6 +51,16 @@ dump_focus_state() {
   } >> "$REPORT"
 }
 
+dump_play_ui() {
+  adb shell uiautomator dump /sdcard/arl-play.xml >/dev/null
+  adb pull /sdcard/arl-play.xml "$OUT/window-play.xml" >/dev/null
+}
+
+play_controls_visible() {
+  grep -q 'resource-id="com.samp.mobile:id/arl_nickname"' "$OUT/window-play.xml" 2>/dev/null &&
+  grep -q 'resource-id="com.samp.mobile:id/arl_play"' "$OUT/window-play.xml" 2>/dev/null
+}
+
 APK="${ARL_TEST_APK:-}"
 if [[ -z "$APK" ]]; then
   APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
@@ -65,8 +73,6 @@ log "Device: $(adb shell getprop ro.product.model | tr -d '\r')"
 log "Android: $(adb shell getprop ro.build.version.release | tr -d '\r') / API $(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 log "ABI: $(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
 
-# This APK must be launcher-only: if a .so slipped into it, an x86_64 emulator
-# could fail installation or accidentally exercise an unsupported native path.
 if unzip -l "$APK" | grep -Eq '(^|[[:space:]])lib/[^/]+/[^[:space:]]+\.so'; then
   log "FAIL: APK de harness contém biblioteca nativa .so"
   exit 1
@@ -76,13 +82,7 @@ log "PASS: APK de harness sem bibliotecas nativas"
 adb logcat -c
 adb install -r "$APK" | tee -a "$REPORT"
 adb shell pm clear "$PKG" >/dev/null
-
-# Fake *structure only*. No Rockstar game asset is supplied. The production
-# validator currently recognizes texdb + one GTA data directory as the minimum
-# structural signal; that is enough to exercise the launcher/bootstrap path.
-adb shell "mkdir -p '$ROOT/texdb' '$ROOT/data'"
-adb shell "echo phase9_1_emulator_harness > '$ROOT/ARL_EMULATOR_FAKE_BASE.txt'"
-log "PASS: estrutura mínima de base criada no emulador (sem conteúdo GTA)"
+log "INFO: a fake base estrutural será criada pelo próprio UID do app; nenhum asset GTA é fornecido"
 
 adb logcat -v time > "$OUT/logcat.txt" &
 LOGCAT_PID=$!
@@ -116,13 +116,18 @@ if [[ "$READY" != 1 ]]; then
   exit 1
 fi
 
+if adb shell "test -f '$ROOT/ARL_EMULATOR_FAKE_BASE.txt'"; then
+  log "PASS: fake base criada pelo próprio app em getExternalFilesDir()"
+else
+  log "FAIL: marcador da fake base app-owned não foi criado"
+  exit 1
+fi
+
 adb exec-out screencap -p > "$OUT/launcher-after-bootstrap.png"
 adb shell uiautomator dump /sdcard/arl-window.xml >/dev/null
 adb pull /sdcard/arl-window.xml "$OUT/window-after-bootstrap.xml" >/dev/null
 
 if ! grep -q 'ENTRAR NO AMAZING REAL LIFE' "$OUT/window-after-bootstrap.xml"; then
-  # The CTA can be below the fold; the launcher itself must at least expose its
-  # premium identity/status before we scroll to the play controls.
   grep -Eq 'AMAZING REAL LIFE|ARL MOBILE|GTA BRASIL' "$OUT/window-after-bootstrap.xml" || {
     log "FAIL: identidade ARL não encontrada no UI dump"
     exit 1
@@ -142,7 +147,6 @@ grep -q 'phase8-gta-brasil-6417354' <<<"$EMBED_PREFS" || { log "FAIL: versão em
 grep -q '6107f9da7a83e304de3d749b8ae70cb9ef563f634df04d88c9161a9fcb7d4889' <<<"$EMBED_PREFS" || { log "FAIL: SHA embedded não persistido"; exit 1; }
 log "PASS: versão e SHA do pacote persistidos pelo app"
 
-# Second boot must reuse the already-installed layer rather than re-extract it.
 adb shell am force-stop "$PKG"
 SECOND_START=$(date +%s)
 adb shell am start -W -n "$SPLASH" >/dev/null
@@ -162,13 +166,19 @@ fi
 SECOND_SECONDS=$(( $(date +%s) - SECOND_START ))
 log "PASS: segundo boot reutilizou instalação existente (${SECOND_SECONDS}s)"
 
-# Scroll to the identity/play section. UIAutomator only exposes visible nodes.
-adb shell input swipe 520 1650 520 560 550 >/dev/null || true
-sleep 1
-adb shell input swipe 520 1650 520 560 550 >/dev/null || true
-sleep 1
-adb shell uiautomator dump /sdcard/arl-play.xml >/dev/null
-adb pull /sdcard/arl-play.xml "$OUT/window-play.xml" >/dev/null
+# Find nickname/play without assuming a fixed scroll offset. Start with the
+# current viewport and scroll only when the controls are not visible.
+FOUND_CONTROLS=0
+for attempt in 0 1 2 3; do
+  dump_play_ui
+  if play_controls_visible; then
+    FOUND_CONTROLS=1
+    break
+  fi
+  adb shell input swipe 520 1650 520 650 450 >/dev/null || true
+  sleep 1
+done
+[[ "$FOUND_CONTROLS" = 1 ]] || { log "FAIL: controles nickname/JOGAR não ficaram visíveis"; exit 1; }
 
 python3 - "$OUT/window-play.xml" "$OUT/tap-points.txt" <<'PY'
 import re, sys, xml.etree.ElementTree as ET
@@ -198,7 +208,8 @@ PY
 read _ NX NY < <(grep '^nick ' "$OUT/tap-points.txt")
 read _ PX PY < <(grep '^play ' "$OUT/tap-points.txt")
 adb shell input tap "$NX" "$NY"
-adb shell input keyevent KEYCODE_CLEAR || true
+adb shell input keyevent KEYCODE_MOVE_END || true
+for _ in $(seq 1 24); do adb shell input keyevent KEYCODE_DEL >/dev/null || true; done
 adb shell input text 'ARL_Test_01'
 adb shell input keyevent KEYCODE_BACK || true
 sleep 1
@@ -208,6 +219,7 @@ sleep 3
 HARNESS_PREFS="$(adb shell run-as "$PKG" cat shared_prefs/arl_emulator_harness.xml 2>/dev/null | tr -d '\r' || true)"
 grep -q 'play_gate_ok' <<<"$HARNESS_PREFS" || { log "FAIL: botão JOGAR não atravessou os gates"; echo "$HARNESS_PREFS" >> "$REPORT"; exit 1; }
 grep -q 'value="true"' <<<"$HARNESS_PREFS" || { log "FAIL: play_gate_ok != true"; exit 1; }
+grep -q 'ARL_Test_01' <<<"$HARNESS_PREFS" || { log "FAIL: nickname de teste não foi persistido no play gate"; exit 1; }
 log "PASS: nickname + todos os gates do botão JOGAR passaram sem carregar GTASA"
 
 adb exec-out screencap -p > "$OUT/launcher-play-gate.png"
