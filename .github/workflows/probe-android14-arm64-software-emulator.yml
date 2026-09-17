@@ -37,13 +37,8 @@ jobs:
             --name "$AVD_NAME" \
             --package "system-images;android-34;default;arm64-v8a" \
             --device "pixel_6"
-          printf '%s\n' \
-            'hw.cpu.ncore=4' \
-            'hw.ramSize=3072' \
-            'hw.gpu.enabled=yes' \
-            'hw.gpu.mode=swiftshader_indirect' \
-            'disk.dataPartition.size=8G' \
-            >> "$HOME/.android/avd/${AVD_NAME}.avd/config.ini"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list avd
+          find "$HOME" -maxdepth 5 -type f -name config.ini -path "*${AVD_NAME}*" -print || true
 
       - name: Boot ARM64 Android 14 by software emulation
         shell: bash
