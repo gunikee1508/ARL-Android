@@ -1,0 +1,147 @@
+name: Phase 10 - Android 14 End-to-End
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-cdn-differential-updater
+    paths:
+      - arl_overlay/**
+      - launcher-phase10.json
+      - tools/patch_phase10_emulator_harness.py
+      - tools/run_phase10_android14_test.sh
+      - .github/workflows/test-phase10-android14-e2e.yml
+
+permissions:
+  contents: read
+
+jobs:
+  android14-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ARL_VERSION_CODE: '111'
+      ARL_VERSION_NAME: '1.0.4-phase10-android14-test'
+
+    steps:
+      - name: Checkout ARL Phase 10
+        uses: actions/checkout@v5
+
+      - name: Checkout SAMP-Mobile GTA-2.10
+        uses: actions/checkout@v5
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/**/*.gradle*
+
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Apply real Phase 10 launcher
+        run: python3 apply_arl_phase1.py upstream
+
+      - name: Keep GTA Brasil runtime source parity
+        run: python3 tools/patch_arl_brasil_runtime.py upstream
+
+      - name: Keep Phase 9 premium UI source parity
+        run: python3 tools/patch_phase9_premium_client.py upstream
+
+      - name: Convert generated APK to x86_64 launcher harness
+        run: python3 tools/patch_phase10_emulator_harness.py upstream
+
+      - name: Verify test source invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'versionCode 111' upstream/app/build.gradle
+          grep -q 'versionName "1.0.4-phase10-android14-test"' upstream/app/build.gradle
+          grep -q "'\*\*/\*.so'" upstream/app/build.gradle
+          ! grep -q 'externalNativeBuild' upstream/app/build.gradle
+          grep -q 'phase10-cdn-differential-updater/launcher-phase10.json' upstream/app/src/main/java/com/samp/mobile/launcher/ArlConfig.java
+          grep -q 'dataPackages()' upstream/app/src/main/java/com/samp/mobile/launcher/ArlDataManager.java
+          grep -q 'Range' upstream/app/src/main/java/com/samp/mobile/launcher/ArlDataManager.java
+          grep -q 'putBoolean("play_gate_ok", true)' upstream/app/src/main/java/com/samp/mobile/launcher/MainActivity.java
+          grep -q 'ensurePhase10TestBase();' upstream/app/src/main/java/com/samp/mobile/launcher/SplashActivity.java
+          ! test -e upstream/app/src/main/assets/arl/embedded-data.zip
+
+      - name: Build Java-only Android 14 harness
+        working-directory: upstream
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx5g
+        run: |
+          chmod +x gradlew
+          ./gradlew --stacktrace --no-daemon assembleDebug
+
+      - name: Validate harness APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          if unzip -l "$APK" | grep -Eq '(^|[[:space:]])lib/[^/]+/[^[:space:]]+\.so'; then
+            echo 'Harness unexpectedly contains native libraries' >&2
+            exit 1
+          fi
+          if unzip -l "$APK" | grep -q 'assets/arl/embedded-data.zip'; then
+            echo 'Harness unexpectedly contains embedded Phase 8 DATA' >&2
+            exit 1
+          fi
+          mkdir -p phase10-android14-output
+          cp "$APK" phase10-android14-output/ARL-Android-1.0.4-phase10-android14-test.apk
+          sha256sum phase10-android14-output/*.apk > phase10-android14-output/APK_SHA256.txt
+          stat -c 'APK bytes: %s' phase10-android14-output/*.apk > phase10-android14-output/APK_SIZE.txt
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run full Phase 10 scenario on Android 14
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ARL_TEST_APK: ${{ github.workspace }}/phase10-android14-output/ARL-Android-1.0.4-phase10-android14-test.apk
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          profile: pixel_7_pro
+          cores: 4
+          ram-size: 4096M
+          heap-size: 512M
+          disk-size: 12G
+          emulator-boot-timeout: 900
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash tools/run_phase10_android14_test.sh
+
+      - name: Upload Android 14 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Phase10-Android14-E2E-Evidence
+          path: phase10-android14-output/*
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
