@@ -44,9 +44,41 @@ def main():
     write(gradle, g)
 
     # Keep all launcher/play validation but stop just before native GTA/SAMP startup.
+    # Breadcrumbs are CI-only and do not alter any production decision/return path.
     m = read(main)
+
+    play_head = '    private void play() {\n'
+    play_head_new = '''    private void play() {\n        getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                .edit()\n                .putBoolean("play_entered", true)\n                .putString("stage", "entered")\n                .commit();\n'''
+    if play_head_new not in m:
+        if m.count(play_head) != 1: die('play() marker inesperado')
+        m = m.replace(play_head, play_head_new, 1)
+
+    nick_marker = '        String nick = nickname.getText().toString().trim();\n'
+    nick_marker_new = '''        getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                .edit().putString("stage", "launcher_gates_ok").commit();\n        String nick = nickname.getText().toString().trim();\n'''
+    if nick_marker_new not in m:
+        if m.count(nick_marker) != 1: die('nickname marker inesperado')
+        m = m.replace(nick_marker, nick_marker_new, 1)
+
+    settings_marker = '''        try {\n            ConfigValidator.validateConfigFiles(this);'''
+    settings_marker_new = '''        getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                .edit().putString("stage", "nickname_ok").putString("nickname_before_settings", nick).commit();\n        try {\n            getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                    .edit().putString("stage", "writing_settings").commit();\n            ConfigValidator.validateConfigFiles(this);'''
+    if settings_marker_new not in m:
+        if m.count(settings_marker) != 1: die('settings try marker inesperado')
+        m = m.replace(settings_marker, settings_marker_new, 1)
+
+    store_marker = '            ini.store();\n'
+    store_marker_new = '''            ini.store();\n            getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                    .edit().putBoolean("settings_ok", true).putString("stage", "settings_ok").commit();\n'''
+    if store_marker_new not in m:
+        if m.count(store_marker) != 1: die('ini.store marker inesperado')
+        m = m.replace(store_marker, store_marker_new, 1)
+
+    catch_marker = '''        } catch (Exception e) {\n            Toast.makeText(this, "Falha ao salvar settings.ini.", Toast.LENGTH_LONG).show();\n            return;\n        }'''
+    catch_marker_new = '''        } catch (Exception e) {\n            getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                    .edit()\n                    .putString("stage", "settings_error")\n                    .putString("settings_error", e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()))\n                    .commit();\n            Toast.makeText(this, "Falha ao salvar settings.ini.", Toast.LENGTH_LONG).show();\n            return;\n        }'''
+    if catch_marker_new not in m:
+        if m.count(catch_marker) != 1: die('settings catch marker inesperado')
+        m = m.replace(catch_marker, catch_marker_new, 1)
+
     old = '        startActivity(new Intent(this, SAMP.class));'
-    new = '''        getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                .edit()\n                .putBoolean("play_gate_ok", true)\n                .putString("nickname", nick)\n                .putString("endpoint", ArlRemoteConfig.host() + ":" + ArlRemoteConfig.port())\n                .commit();\n        Toast.makeText(this, "ARL PHASE 10 TEST • PLAY GATE OK", Toast.LENGTH_LONG).show();'''
+    new = '''        getSharedPreferences("arl_phase10_emulator_harness", MODE_PRIVATE)\n                .edit()\n                .putBoolean("play_gate_ok", true)\n                .putString("stage", "play_gate_ok")\n                .putString("nickname", nick)\n                .putString("endpoint", ArlRemoteConfig.host() + ":" + ArlRemoteConfig.port())\n                .commit();\n        Toast.makeText(this, "ARL PHASE 10 TEST • PLAY GATE OK", Toast.LENGTH_LONG).show();'''
     if new not in m:
         if m.count(old) != 1: die('startActivity SAMP marker inesperado')
         m = m.replace(old, new, 1)
@@ -73,13 +105,15 @@ def main():
     checks = [
         'externalNativeBuild' not in read(gradle),
         "'**/*.so'" in read(gradle),
+        'putBoolean("play_entered", true)' in read(main),
+        'putBoolean("settings_ok", true)' in read(main),
         'putBoolean("play_gate_ok", true)' in read(main),
         'startActivity(new Intent(this, SAMP.class));' not in read(main),
         'ensurePhase10TestBase();' in read(splash),
         'ArlDataManager.verifyOrRepair(this, false' in read(splash),
     ]
     if not all(checks): die('auditoria pós-patch falhou')
-    print('[ARL PHASE10 TEST] OK: Android emulator harness aplicado')
+    print('[ARL PHASE10 TEST] OK: Android emulator harness + breadcrumbs aplicados')
     print('[ARL PHASE10 TEST] OK: downloader/manifest/repair da Phase 10 permanecem reais')
     return 0
 
