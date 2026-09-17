@@ -24,8 +24,9 @@ def main() -> int:
 
     gradle = root / "app/build.gradle"
     main = root / "app/src/main/java/com/samp/mobile/launcher/MainActivity.java"
-    if not gradle.is_file() or not main.is_file():
-        die("build.gradle/MainActivity.java ausente")
+    splash = root / "app/src/main/java/com/samp/mobile/launcher/SplashActivity.java"
+    if not gradle.is_file() or not main.is_file() or not splash.is_file():
+        die("build.gradle/MainActivity.java/SplashActivity.java ausente")
 
     g = read(gradle)
 
@@ -84,8 +85,55 @@ def main() -> int:
         m = m.replace(old, new, 1)
     write(main, m)
 
+    # The fake GTA base must be created by the app itself. Creating
+    # /sdcard/Android/data/<package>/files via `adb shell mkdir` on Android 14
+    # can leave the external-files root with shell ownership/context, which makes
+    # the real embedded installer unable to create sibling directories such as
+    # `arlbrasil`. This code exists only in the generated Phase 9.1 harness APK.
+    s = read(splash)
+    if "import java.io.File;" not in s:
+        marker = "import java.util.ArrayList;"
+        if marker not in s:
+            die("imports SplashActivity inesperados")
+        s = s.replace(marker, "import java.io.File;\nimport java.util.ArrayList;", 1)
+
+    call = "        ensureEmulatorHarnessBase();\n        handler.post(this::bootstrap);"
+    if call not in s:
+        old_call = "        handler.post(this::bootstrap);"
+        if s.count(old_call) != 1:
+            die(f"bootstrap marker esperado 1x, encontrado {s.count(old_call)}")
+        s = s.replace(old_call, call, 1)
+
+    method = '''
+    /** Phase 9.1 test only: create structural GTA-base sentinels as the app UID. */
+    private void ensureEmulatorHarnessBase() {
+        try {
+            File root = getExternalFilesDir(null);
+            if (root == null) return;
+            File texdb = new File(root, "texdb");
+            File data = new File(root, "data");
+            if ((!texdb.mkdirs() && !texdb.isDirectory()) ||
+                    (!data.mkdirs() && !data.isDirectory())) {
+                throw new IllegalStateException("falha criando fake base app-owned");
+            }
+            File marker = new File(root, "ARL_EMULATOR_FAKE_BASE.txt");
+            if (!marker.exists()) marker.createNewFile();
+        } catch (Exception e) {
+            Toast.makeText(this, "ARL HARNESS • FAKE BASE FALHOU: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+'''
+    if "private void ensureEmulatorHarnessBase()" not in s:
+        insert_before = "    private void setSplashStatus(String title, String detail) {"
+        if insert_before not in s:
+            die("setSplashStatus marker ausente")
+        s = s.replace(insert_before, method + "\n" + insert_before, 1)
+    write(splash, s)
+
     g = read(gradle)
     m = read(main)
+    s = read(splash)
     checks = [
         "**/*.so" in g,
         "externalNativeBuild" not in g,
@@ -93,11 +141,16 @@ def main() -> int:
         "debuggable true" in g,
         'putBoolean("play_gate_ok", true)' in m,
         "startActivity(new Intent(this, SAMP.class));" not in m,
+        "ensureEmulatorHarnessBase();" in s,
+        'new File(root, "texdb")' in s,
+        'new File(root, "data")' in s,
+        'ARL_EMULATOR_FAKE_BASE.txt' in s,
     ]
     if not all(checks):
         die("auditoria pós-patch falhou")
 
     print("[ARL PHASE9.1] OK: launcher-only x86_64 emulator harness aplicado")
+    print("[ARL PHASE9.1] OK: fake base criada pelo UID do próprio app")
     return 0
 
 
