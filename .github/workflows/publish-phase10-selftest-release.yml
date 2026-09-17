@@ -1,0 +1,80 @@
+name: Phase 10 - Publish ARM64 Self-Test Release
+
+on:
+  push:
+    branches:
+      - phase10-native-arm64-runtime-test
+    paths:
+      - .github/workflows/publish-phase10-selftest-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: phase10-arm64-selftest-v1
+      SOURCE_RUN: '35225178232'
+      ARTIFACT_NAME: ARL-Phase10-Native-ARM64-Android-SelfTest
+    steps:
+      - name: Download validated self-test artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir dist
+          ls -lah dist
+          test -f dist/ARL-Android-1.0.4-phase10-arm64-selftest.apk
+          test -f dist/ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk
+
+      - name: Verify known APK hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'b295e2c31f1a79287a7a59cbdff464f100c6ee221a9f7dfa0cd1e1ad516903f6  dist/ARL-Android-1.0.4-phase10-arm64-selftest.apk' | sha256sum -c -
+          echo '429202fe3c2124fac95ced10322a2313ffc19af7f2af288fce0c9b8048b81b4d  dist/ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk' | sha256sum -c -
+          (cd dist && zip -9 -r ARL-Phase10-Native-ARM64-Android-SelfTest.zip \
+            ARL-Android-1.0.4-phase10-arm64-selftest.apk \
+            ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk \
+            HOW_TO_RUN.txt RESULT.txt SHA256SUMS.txt SIZES.txt APK_CONTENTS.txt BADGING.txt \
+            LIBSAMP_ELF_HEADER.txt LIBSAMP_DYNAMIC.txt ARL_RUNTIME_STRINGS.txt 2>/dev/null || \
+            zip -9 ARL-Phase10-Native-ARM64-Android-SelfTest.zip \
+              ARL-Android-1.0.4-phase10-arm64-selftest.apk \
+              ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk)
+          sha256sum dist/ARL-Phase10-Native-ARM64-Android-SelfTest.zip
+
+      - name: Publish stable GitHub Release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title 'ARL Phase 10 ARM64 Self-Test v1' \
+            --notes 'APK ARM64 de laboratório da Phase 10 e APK de instrumentação. Não contém libGTASA.so. Build validada no run 35225178232.' \
+            dist/ARL-Android-1.0.4-phase10-arm64-selftest.apk \
+            dist/ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk \
+            dist/ARL-Phase10-Native-ARM64-Android-SelfTest.zip
+
+      - name: Verify public release asset URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets
+          for f in \
+            ARL-Android-1.0.4-phase10-arm64-selftest.apk \
+            ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk \
+            ARL-Phase10-Native-ARM64-Android-SelfTest.zip; do
+            url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$f"
+            code=$(curl -L -sS -o /dev/null -w '%{http_code}' "$url")
+            echo "$code $url"
+            test "$code" = '200'
+          done
