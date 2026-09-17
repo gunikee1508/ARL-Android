@@ -1,0 +1,66 @@
+name: Phase 10 - Probe ARM64 Android Host
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-native-arm64-runtime-test
+    paths:
+      - .github/workflows/probe-phase10-arm64-host.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe-arm64-host:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Host architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          uname -m | tee /tmp/arch.txt
+          test "$(uname -m)" = "aarch64"
+          echo "CPU: $(nproc) cores"
+          free -h
+          df -h /
+
+      - name: KVM capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e /dev/kvm ]; then
+            ls -l /dev/kvm
+            test -r /dev/kvm
+            test -w /dev/kvm
+            echo 'KVM_AVAILABLE=yes' | tee -a "$GITHUB_ENV"
+          else
+            echo 'KVM_AVAILABLE=no' | tee -a "$GITHUB_ENV"
+          fi
+
+      - name: Android toolchain inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+          command -v java || true
+          java -version
+          command -v adb || true
+          command -v sdkmanager || true
+          command -v avdmanager || true
+          command -v emulator || true
+          if command -v sdkmanager >/dev/null 2>&1; then
+            sdkmanager --list | grep -E 'system-images;android-34;(default|google_apis);arm64-v8a|emulator|ndk;26.2.11394342|cmake;3.22.1' | head -80 || true
+          fi
+
+      - name: Probe result
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ARM64_HOST=$(uname -m)"
+          echo "KVM_AVAILABLE=${KVM_AVAILABLE:-no}"
+          if command -v sdkmanager >/dev/null 2>&1; then echo 'SDKMANAGER=yes'; else echo 'SDKMANAGER=no'; fi
+          if command -v emulator >/dev/null 2>&1; then echo 'EMULATOR=yes'; else echo 'EMULATOR=no'; fi
