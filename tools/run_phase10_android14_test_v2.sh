@@ -30,14 +30,14 @@ s=s.replace(old,new,1)
 
 old='''[[ ! -e "$ROOT/download/arl_phase10" ]] || { log "FAIL: diretório de download permaneceu após segundo boot"; exit 1; }'''
 new='''if adb shell "test -e '$ROOT/download/arl_phase10'"; then log "FAIL: diretório de download permaneceu após segundo boot"; exit 1; fi'''
-if s.count(old)!=2:
-    raise SystemExit(f'expected two host-side staging assertions, found {s.count(old)}')
+if s.count(old)!=1:
+    raise SystemExit(f'expected one second-boot host-side staging assertion, found {s.count(old)}')
 s=s.replace(old,new,1)
-# The second original line has a different failure message.
+
 old2='''[[ ! -e "$ROOT/download/arl_phase10" ]] || { log "FAIL: staging/download sobrou após reparo"; exit 1; }'''
 new2='''if adb shell "test -e '$ROOT/download/arl_phase10'"; then log "FAIL: staging/download sobrou após reparo"; exit 1; fi'''
-if old2 not in s:
-    raise SystemExit('repair staging assertion not found')
+if s.count(old2)!=1:
+    raise SystemExit(f'expected one repair host-side staging assertion, found {s.count(old2)}')
 s=s.replace(old2,new2,1)
 
 p.write_text(s,encoding='utf-8',newline='\n')
