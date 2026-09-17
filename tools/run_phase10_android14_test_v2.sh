@@ -13,6 +13,31 @@ import sys
 p=Path(sys.argv[1])
 s=p.read_text(encoding='utf-8')
 
+old_dump='''dump_ui(){
+  adb shell uiautomator dump /sdcard/arl-phase10.xml >/dev/null
+  adb pull /sdcard/arl-phase10.xml "$OUT/window.xml" >/dev/null
+}'''
+new_dump='''dump_ui(){
+  rm -f "$OUT/window.xml"
+  for attempt in 1 2 3 4 5 6 7 8; do
+    adb shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+    adb shell wm dismiss-keyguard >/dev/null 2>&1 || true
+    adb shell rm -f /sdcard/arl-phase10.xml >/dev/null 2>&1 || true
+    if adb shell uiautomator dump --compressed /sdcard/arl-phase10.xml >/dev/null 2>&1 && \\
+       adb pull /sdcard/arl-phase10.xml "$OUT/window.xml" >/dev/null 2>&1 && \\
+       [[ -s "$OUT/window.xml" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  adb exec-out screencap -p > "$OUT/ui-dump-failure.png" 2>/dev/null || true
+  log "FAIL: UIAutomator não conseguiu capturar a árvore após 8 tentativas"
+  return 1
+}'''
+if old_dump not in s:
+    raise SystemExit('dump_ui block not found')
+s=s.replace(old_dump,new_dump,1)
+
 old='''[[ "$TOTAL_ARL" = "8558" ]] || { log "FAIL: TOTAL_ARL=$TOTAL_ARL"; exit 1; }
 adb shell "test -s '$ROOT/texdb/arlbrasil/arlbrasil.txt'" || { log "FAIL: arlbrasil.txt ausente"; exit 1; }
 log "PASS: 8.558 arquivos instalados; 8.552 PNGs; IMG=213.379.072 bytes"'''
