@@ -7,6 +7,8 @@ on:
       - phase10-cdn-differential-updater
     paths:
       - tools/run_phase10_android14_test_v2.sh
+      - tools/patch_phase10_emulator_harness.py
+      - tools/patch_phase10_gate_diagnostics.py
       - .github/workflows/test-phase10-android14-e2e-v2.yml
 
 permissions:
@@ -66,6 +68,9 @@ jobs:
       - name: Convert generated APK to x86_64 launcher harness
         run: python3 tools/patch_phase10_emulator_harness.py upstream
 
+      - name: Add CI-only play gate diagnostics
+        run: python3 tools/patch_phase10_gate_diagnostics.py upstream
+
       - name: Verify test source invariants
         shell: bash
         run: |
@@ -78,6 +83,8 @@ jobs:
           grep -q 'dataPackages()' upstream/app/src/main/java/com/samp/mobile/launcher/ArlDataManager.java
           grep -q 'Range' upstream/app/src/main/java/com/samp/mobile/launcher/ArlDataManager.java
           grep -q 'putBoolean("play_gate_ok", true)' upstream/app/src/main/java/com/samp/mobile/launcher/MainActivity.java
+          grep -q 'blocked_repair' upstream/app/src/main/java/com/samp/mobile/launcher/MainActivity.java
+          grep -q 'snap_requires_repair' upstream/app/src/main/java/com/samp/mobile/launcher/MainActivity.java
           grep -q 'ensurePhase10TestBase();' upstream/app/src/main/java/com/samp/mobile/launcher/SplashActivity.java
           ! test -e upstream/app/src/main/assets/arl/embedded-data.zip
 
