@@ -1,0 +1,93 @@
+name: Phase 10 - Publish Differential CDN
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-cdn-differential-updater
+    paths:
+      - tools/build_phase10_cdn.py
+      - .github/workflows/publish-phase10-cdn.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SOURCE_RUN_ID: '35151353048'
+      SOURCE_BYTES: '428375058'
+      SOURCE_SHA256: '6107f9da7a83e304de3d749b8ae70cb9ef563f634df04d88c9161a9fcb7d4889'
+      RELEASE_TAG: 'phase10-data-v1'
+      RELEASE_BASE: 'https://github.com/gunikee1508/ARL-Android/releases/download/phase10-data-v1'
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout Phase 10
+        uses: actions/checkout@v5
+
+      - name: Download validated Phase 8 source DATA
+        uses: actions/download-artifact@v4
+        with:
+          name: phase8-gta-brasil-arl-data
+          path: source-data
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify source DATA
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="$(find source-data -maxdepth 1 -type f -name 'arl-data-*.zip' -print -quit)"
+          MANIFEST="$(find source-data -maxdepth 1 -type f -name 'arl-data-*.manifest.json' -print -quit)"
+          test -n "$PACKAGE" && test -n "$MANIFEST"
+          test "$(stat -c %s "$PACKAGE")" = "$SOURCE_BYTES"
+          echo "$SOURCE_SHA256  $PACKAGE" | sha256sum -c -
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+          echo "MANIFEST=$MANIFEST" >> "$GITHUB_ENV"
+
+      - name: Build differential CDN packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/build_phase10_cdn.py \
+            --package "$PACKAGE" \
+            --manifest "$MANIFEST" \
+            --output phase10-cdn \
+            --release-base "$RELEASE_BASE"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('phase10-cdn/distribution.json',encoding='utf-8'))
+          assert d['version']=='phase10-gta-brasil-6417354'
+          assert d['fileCount']==8558
+          assert d['packageCount'] >= 2
+          assert sum(len(p['files']) for p in d['packages'])==8558
+          assert all(len(p['sha256'])==64 and p['bytes']>0 for p in d['packages'])
+          print('Phase 10 CDN manifest validation: OK', d['packageCount'], d['totalPackageBytes'])
+          PY
+
+      - name: Create or update public CDN prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "ARL Android Phase 10 DATA CDN" \
+              --notes "Differential ARL/GTA Brasil client assets. Managed by the ARL launcher."
+          fi
+          gh release upload "$RELEASE_TAG" phase10-cdn/* --clobber
+
+      - name: Upload CDN build report
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase10-cdn-report
+          path: |
+            phase10-cdn/distribution.json
+            phase10-cdn/SHA256SUMS.txt
+          retention-days: 14
