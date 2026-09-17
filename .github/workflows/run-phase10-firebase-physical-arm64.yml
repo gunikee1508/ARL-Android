@@ -1,0 +1,253 @@
+name: Phase 10 - Firebase Physical ARM64 Runtime Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-native-arm64-runtime-test
+    paths:
+      - .github/workflows/run-phase10-firebase-physical-arm64.yml
+
+permissions:
+  contents: read
+
+jobs:
+  physical-arm64-selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ARL_VERSION_CODE: '111'
+      ARL_VERSION_NAME: '1.0.4-phase10-arm64-selftest'
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+
+    steps:
+      - name: Check Firebase credentials
+        id: firebase_preflight
+        shell: bash
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FIREBASE_PROJECT_ID:-}" ] || [ -z "${FIREBASE_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Firebase Test Lab credentials are not configured yet."
+            echo "Required repository secrets: FIREBASE_PROJECT_ID and FIREBASE_SERVICE_ACCOUNT_JSON."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Firebase Test Lab credentials detected."
+          fi
+
+      - name: Setup notice
+        if: steps.firebase_preflight.outputs.ready != 'true'
+        shell: bash
+        run: |
+          cat <<'TXT'
+          ARL Phase 10 physical ARM64 test is READY but waiting for Firebase credentials.
+
+          Configure these GitHub repository secrets:
+            FIREBASE_PROJECT_ID
+            FIREBASE_SERVICE_ACCOUNT_JSON
+
+          Then use Actions > Phase 10 - Firebase Physical ARM64 Runtime Test > Run workflow.
+          TXT
+
+      - name: Checkout ARL native-test branch
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        uses: actions/checkout@v5
+
+      - name: Checkout upstream without proprietary GTASA binary
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+            !/app/src/main/jniLibs/armeabi-v7a/libGTASA.so
+
+      - name: Assert proprietary GTASA was never materialized
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e upstream/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+          test ! -e upstream/app/src/main/jniLibs/armeabi-v7a/libGTASA.so
+
+      - name: Setup Java 17
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/**/*.gradle*
+
+      - name: Install Android build components
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.2.11394342" \
+            "cmake;3.22.1"
+
+      - name: Apply Phase 10 production foundation
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 apply_arl_phase1.py upstream
+          python3 tools/patch_arl_brasil_runtime.py upstream
+          python3 tools/patch_phase9_premium_client.py upstream
+          python3 fix_upstream_native.py upstream
+          python3 tools/patch_phase10_native_arm64_probe.py upstream
+          python3 tools/patch_phase10_native_android_selftest.py upstream
+
+      - name: Build ARM64 self-test APKs
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        working-directory: upstream
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+
+      - name: Stage and audit APKs
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p firebase-testlab
+          APP=upstream/app/build/outputs/apk/debug/app-debug.apk
+          TESTAPK=upstream/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          cp "$APP" firebase-testlab/ARL-Android-1.0.4-phase10-arm64-selftest.apk
+          cp "$TESTAPK" firebase-testlab/ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk
+          unzip -l "$APP" > firebase-testlab/APK_CONTENTS.txt
+          grep -q 'lib/arm64-v8a/libsamp.so' firebase-testlab/APK_CONTENTS.txt
+          grep -q 'lib/arm64-v8a/libarlprobe.so' firebase-testlab/APK_CONTENTS.txt
+          ! grep -q 'libGTASA.so' firebase-testlab/APK_CONTENTS.txt
+          ! grep -q 'lib/armeabi-v7a/' firebase-testlab/APK_CONTENTS.txt
+          sha256sum firebase-testlab/*.apk | tee firebase-testlab/SHA256SUMS.txt
+
+      - name: Authenticate Google Cloud
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+
+      - name: Setup gcloud
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ secrets.FIREBASE_PROJECT_ID }}
+
+      - name: Verify Firebase Test Lab access
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud config set project "$FIREBASE_PROJECT_ID" >/dev/null
+          gcloud firebase test android models list --format=json > firebase-testlab/models.json
+          test -s firebase-testlab/models.json
+
+      - name: Select current physical ARM64 Android device
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        id: device
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re
+          models = json.load(open('firebase-testlab/models.json', encoding='utf-8'))
+          choices = []
+          for m in models:
+              form = str(m.get('form', '')).upper()
+              if form != 'PHYSICAL':
+                  continue
+              abis = {str(x).lower() for x in (m.get('supportedAbis') or [])}
+              if 'arm64-v8a' not in abis:
+                  continue
+              versions = [str(x) for x in (m.get('supportedVersionIds') or [])]
+              numeric = sorted({int(v) for v in versions if re.fullmatch(r'\d+', v) and int(v) >= 26}, reverse=True)
+              if not numeric:
+                  continue
+              # Prefer Android 14/API 34, otherwise newest supported Android >= 26.
+              version = 34 if 34 in numeric else numeric[0]
+              tags = {str(x).lower() for x in (m.get('tags') or [])}
+              deprecated = any('deprecated' in t for t in tags)
+              choices.append((deprecated, 0 if version == 34 else 1, -version, str(m.get('id')), str(version), str(m.get('name', ''))))
+          if not choices:
+              raise SystemExit('No physical arm64-v8a Android device is currently available in Test Lab catalog')
+          choices.sort()
+          _, _, _, model, version, name = choices[0]
+          print(f'Selected physical device: {model} / {name} / Android {version}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+              f.write(f'model={model}\n')
+              f.write(f'version={version}\n')
+              f.write(f'name={name}\n')
+          PY
+
+      - name: Run instrumentation on physical ARM64 Android
+        if: steps.firebase_preflight.outputs.ready == 'true'
+        id: testlab
+        shell: bash
+        run: |
+          set -uo pipefail
+          APP=firebase-testlab/ARL-Android-1.0.4-phase10-arm64-selftest.apk
+          TESTAPK=firebase-testlab/ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk
+          set +e
+          gcloud firebase test android run \
+            --type instrumentation \
+            --app "$APP" \
+            --test "$TESTAPK" \
+            --device "model=${{ steps.device.outputs.model }},version=${{ steps.device.outputs.version }},locale=pt_BR,orientation=portrait" \
+            --test-targets "class com.samp.mobile.launcher.NativeProbeInstrumentedTest" \
+            --timeout 5m \
+            --no-use-orchestrator \
+            --client-details matrixLabel="ARL Phase 10 Native ARM64 Self-Test" \
+            2>&1 | tee firebase-testlab/TESTLAB_RUN.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Write execution summary
+        if: always() && steps.firebase_preflight.outputs.ready == 'true'
+        shell: bash
+        run: |
+          {
+            echo "# ARL Phase 10 — Firebase physical ARM64 test"
+            echo
+            echo "- Model: ${{ steps.device.outputs.model }}"
+            echo "- Device: ${{ steps.device.outputs.name }}"
+            echo "- Android version ID: ${{ steps.device.outputs.version }}"
+            echo "- Test Lab exit code: ${{ steps.testlab.outputs.exit_code }}"
+            echo
+            if [ "${{ steps.testlab.outputs.exit_code }}" = "0" ]; then
+              echo "**RESULTADO: PASS**"
+            else
+              echo "**RESULTADO: FAIL / INCONCLUSIVE — inspect TESTLAB_RUN.txt and Firebase matrix.**"
+            fi
+          } | tee firebase-testlab/SUMMARY.md
+          cat firebase-testlab/SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Firebase Test Lab evidence
+        if: always() && steps.firebase_preflight.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Phase10-Firebase-Physical-ARM64-Test
+          path: firebase-testlab/*
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
