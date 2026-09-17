@@ -1,0 +1,190 @@
+name: Phase 10 - Build Native ARM64 Android Self-Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-native-arm64-runtime-test
+    paths:
+      - tools/patch_phase10_native_arm64_probe.py
+      - tools/patch_phase10_native_android_selftest.py
+      - .github/workflows/build-phase10-native-android-selftest.yml
+      - arl_overlay/**
+      - apply_arl_phase1.py
+      - fix_upstream_native.py
+      - tools/patch_arl_brasil_runtime.py
+      - tools/patch_phase9_premium_client.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ARL_VERSION_CODE: '111'
+      ARL_VERSION_NAME: '1.0.4-phase10-arm64-selftest'
+
+    steps:
+      - name: Checkout ARL native-test branch
+        uses: actions/checkout@v5
+
+      - name: Checkout upstream without proprietary GTASA binary
+        uses: actions/checkout@v5
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+            !/app/src/main/jniLibs/armeabi-v7a/libGTASA.so
+
+      - name: Assert proprietary GTASA was never materialized
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e upstream/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+          test ! -e upstream/app/src/main/jniLibs/armeabi-v7a/libGTASA.so
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/**/*.gradle*
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.2.11394342" \
+            "cmake;3.22.1"
+
+      - name: Apply Phase 10 production code foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 apply_arl_phase1.py upstream
+          python3 tools/patch_arl_brasil_runtime.py upstream
+          python3 tools/patch_phase9_premium_client.py upstream
+          python3 fix_upstream_native.py upstream
+
+      - name: Add ARM64 native probe and launchable self-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/patch_phase10_native_arm64_probe.py upstream
+          python3 tools/patch_phase10_native_android_selftest.py upstream
+
+      - name: Verify self-test source invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST=upstream/app/src/main/AndroidManifest.xml
+          JAVA=upstream/app/src/main/java/com/samp/mobile/launcher/NativeProbeActivity.java
+          TEST=upstream/app/src/androidTest/java/com/samp/mobile/launcher/NativeProbeInstrumentedTest.java
+          grep -q "abiFilters 'arm64-v8a'" upstream/app/build.gradle
+          grep -q "androidx.test:core:1.4.0" upstream/app/build.gradle
+          grep -q 'System.loadLibrary("samp")' "$JAVA"
+          grep -q 'native_self_test.json' "$JAVA"
+          grep -q 'realArm64SampLoadsSafelyWithoutGtasa' "$TEST"
+          grep -q 'ArlRuntimeGuard::BootSnapshot();' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'CStreaming::AddImageToList(kImgRelative, true)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          test "$(grep -c 'android.intent.action.MAIN' "$MANIFEST")" -eq 1
+          test ! -e upstream/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+          test ! -e upstream/app/src/main/assets/arl/embedded-data.zip
+
+      - name: Build ARM64 self-test app and instrumentation APK
+        working-directory: upstream
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g
+        run: |
+          chmod +x gradlew
+          ./gradlew --stacktrace --no-daemon assembleDebug assembleDebugAndroidTest
+
+      - name: Audit self-test APKs and native runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-selftest-evidence/extracted
+          APP=upstream/app/build/outputs/apk/debug/app-debug.apk
+          TESTAPK=upstream/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          test -f "$APP"
+          test -f "$TESTAPK"
+          cp "$APP" native-selftest-evidence/ARL-Android-1.0.4-phase10-arm64-selftest.apk
+          cp "$TESTAPK" native-selftest-evidence/ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk
+
+          unzip -l "$APP" > native-selftest-evidence/APK_CONTENTS.txt
+          ! grep -q 'libGTASA.so' native-selftest-evidence/APK_CONTENTS.txt
+          ! grep -q 'lib/armeabi-v7a/' native-selftest-evidence/APK_CONTENTS.txt
+          grep -q 'lib/arm64-v8a/libsamp.so' native-selftest-evidence/APK_CONTENTS.txt
+          grep -q 'lib/arm64-v8a/libarlprobe.so' native-selftest-evidence/APK_CONTENTS.txt
+
+          AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
+          "$AAPT" dump badging "$APP" | tee native-selftest-evidence/BADGING.txt
+          grep -q "launchable-activity: name='com.samp.mobile.launcher.NativeProbeActivity'" native-selftest-evidence/BADGING.txt
+
+          unzip -p "$APP" lib/arm64-v8a/libsamp.so > native-selftest-evidence/extracted/libsamp.so
+          unzip -p "$APP" lib/arm64-v8a/libarlprobe.so > native-selftest-evidence/extracted/libarlprobe.so
+          READELF="$ANDROID_HOME/ndk/26.2.11394342/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          "$READELF" -h native-selftest-evidence/extracted/libsamp.so | tee native-selftest-evidence/LIBSAMP_ELF_HEADER.txt
+          "$READELF" -d native-selftest-evidence/extracted/libsamp.so | tee native-selftest-evidence/LIBSAMP_DYNAMIC.txt
+          grep -q 'AArch64' native-selftest-evidence/LIBSAMP_ELF_HEADER.txt
+          ! grep -q 'libGTASA.so' native-selftest-evidence/LIBSAMP_DYNAMIC.txt
+          strings native-selftest-evidence/extracted/libsamp.so | grep -F 'ARL Runtime' | head -20 | tee native-selftest-evidence/ARL_RUNTIME_STRINGS.txt
+          test -s native-selftest-evidence/ARL_RUNTIME_STRINGS.txt
+
+          sha256sum native-selftest-evidence/*.apk native-selftest-evidence/extracted/*.so | tee native-selftest-evidence/SHA256SUMS.txt
+          stat -c '%n %s bytes' native-selftest-evidence/*.apk native-selftest-evidence/extracted/*.so | tee native-selftest-evidence/SIZES.txt
+          cat > native-selftest-evidence/HOW_TO_RUN.txt <<'TXT'
+          ARL Phase 10 native ARM64 self-test — NO GTA REQUIRED
+
+          Install on a real/cloud ARM64 Android device:
+            adb install -r ARL-Android-1.0.4-phase10-arm64-selftest.apk
+
+          Launch the self-test (it is the only launcher Activity in this variant):
+            adb shell am start -n com.samp.mobile/.launcher.NativeProbeActivity
+
+          Read the result from logcat:
+            adb logcat -d -s ARLNativeSelfTest:* *:S
+
+          Pull the JSON report after reading the path from logcat, or run the instrumentation test:
+            adb install -r ARL-Android-1.0.4-phase10-arm64-selftest-androidTest.apk
+            adb shell am instrument -w com.samp.mobile.test/androidx.test.runner.AndroidJUnitRunner
+
+          PASS requires:
+          - process is 64-bit ARM64
+          - libGTASA.so is absent
+          - libarlprobe.so executes as AArch64 JNI
+          - real libsamp.so loads successfully
+          - libsamp JNI_OnLoad safely takes the no-GTASA early-return path
+          TXT
+          printf '%s\n' \
+            'PASS: launchable Activity is NativeProbeActivity, not the GTA Activity' \
+            'PASS: proprietary libGTASA.so absent' \
+            'PASS: real Phase 10 libsamp.so packaged as AArch64' \
+            'PASS: independent libarlprobe.so packaged' \
+            'PASS: instrumentation APK compiled for later ARM64 device execution' \
+            > native-selftest-evidence/RESULT.txt
+          cat native-selftest-evidence/RESULT.txt
+
+      - name: Upload native Android self-test kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Phase10-Native-ARM64-Android-SelfTest
+          path: native-selftest-evidence/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
