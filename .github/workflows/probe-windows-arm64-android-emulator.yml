@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 30
     env:
       AVD_NAME: arl_arm64_api34_windows
+      CMDLINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-win-15859902_latest.zip
+      CMDLINE_TOOLS_SHA256: 90ae805d20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a
     steps:
       - name: Inspect Windows ARM64 runner
         shell: pwsh
@@ -26,69 +28,68 @@ jobs:
           [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() | Tee-Object -Append windows-arm64-evidence/arch.txt
           Get-CimInstance Win32_Processor | Format-List Name,Architecture,VirtualizationFirmwareEnabled,SecondLevelAddressTranslationExtensions | Out-String | Tee-Object windows-arm64-evidence/cpu.txt
           systeminfo | Out-File windows-arm64-evidence/systeminfo.txt
-          "ANDROID_HOME=$env:ANDROID_HOME" | Tee-Object windows-arm64-evidence/android-env.txt
-          "ANDROID_SDK_ROOT=$env:ANDROID_SDK_ROOT" | Tee-Object -Append windows-arm64-evidence/android-env.txt
+          java -version 2>&1 | Tee-Object windows-arm64-evidence/java.txt
 
-          $candidates = @(
-            "$env:ANDROID_HOME",
-            "$env:ANDROID_SDK_ROOT",
-            "C:\Android\android-sdk",
-            "$env:LOCALAPPDATA\Android\Sdk"
-          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-          $candidates | Out-File windows-arm64-evidence/sdk-candidates.txt
-          Get-Command adb,sdkmanager,avdmanager,emulator -ErrorAction SilentlyContinue | Format-List Name,Source | Out-String | Tee-Object windows-arm64-evidence/tools.txt
-
-          $sdk = $null
-          foreach ($c in $candidates) {
-            if (Test-Path "$c\cmdline-tools\latest\bin\sdkmanager.bat") { $sdk = $c; break }
-          }
-          if (-not $sdk) {
-            "SDKMANAGER_NOT_FOUND" | Tee-Object windows-arm64-evidence/RESULT.txt
-            exit 0
-          }
-          "ANDROID_SDK=$sdk" | Tee-Object windows-arm64-evidence/sdk-selected.txt
-          "ANDROID_HOME=$sdk" | Out-File -Append $env:GITHUB_ENV -Encoding utf8
-          "ANDROID_SDK_ROOT=$sdk" | Out-File -Append $env:GITHUB_ENV -Encoding utf8
-
-      - name: Probe emulator and ARM64 system image
+      - name: Install official Android command-line tools
         shell: pwsh
         run: |
-          if (-not $env:ANDROID_HOME) { exit 0 }
+          $ErrorActionPreference = 'Stop'
+          $sdk = Join-Path $env:RUNNER_TEMP 'android-sdk'
+          $zip = Join-Path $env:RUNNER_TEMP 'commandlinetools-win.zip'
+          $extract = Join-Path $env:RUNNER_TEMP 'android-cli-extract'
+          Remove-Item $sdk,$extract -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $sdk,$extract | Out-Null
+
+          Invoke-WebRequest -Uri $env:CMDLINE_TOOLS_URL -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "download_sha256=$hash" | Tee-Object windows-arm64-evidence/cmdline-tools-sha256.txt
+          if ($hash -ne $env:CMDLINE_TOOLS_SHA256) { throw "Android command-line tools SHA-256 mismatch" }
+
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          New-Item -ItemType Directory -Force "$sdk\cmdline-tools\latest" | Out-Null
+          Copy-Item "$extract\cmdline-tools\*" "$sdk\cmdline-tools\latest" -Recurse -Force
+
+          "ANDROID_HOME=$sdk" | Out-File -Append $env:GITHUB_ENV -Encoding utf8
+          "ANDROID_SDK_ROOT=$sdk" | Out-File -Append $env:GITHUB_ENV -Encoding utf8
+          "$sdk\cmdline-tools\latest\bin" | Out-File -Append $env:GITHUB_PATH -Encoding utf8
+          "$sdk\platform-tools" | Out-File -Append $env:GITHUB_PATH -Encoding utf8
+          "$sdk\emulator" | Out-File -Append $env:GITHUB_PATH -Encoding utf8
+          "ANDROID_SDK=$sdk" | Tee-Object windows-arm64-evidence/sdk-selected.txt
+          & "$sdk\cmdline-tools\latest\bin\sdkmanager.bat" --version 2>&1 | Tee-Object windows-arm64-evidence/sdkmanager-version.txt
+
+      - name: Install emulator and Android 14 ARM64 image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
           $sdkmanager = "$env:ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat"
           $avdmanager = "$env:ANDROID_HOME\cmdline-tools\latest\bin\avdmanager.bat"
           $emulator = "$env:ANDROID_HOME\emulator\emulator.exe"
-          if (-not (Test-Path $sdkmanager)) { exit 0 }
 
           & $sdkmanager --list 2>&1 | Tee-Object windows-arm64-evidence/sdk-list.txt | Out-Null
-          Select-String -Path windows-arm64-evidence/sdk-list.txt -Pattern 'system-images;android-34;default;arm64-v8a|emulator' | Select-Object -First 50 | Out-File windows-arm64-evidence/sdk-arm64.txt
+          Select-String -Path windows-arm64-evidence/sdk-list.txt -Pattern 'system-images;android-34;default;arm64-v8a|emulator' | Select-Object -First 80 | Out-File windows-arm64-evidence/sdk-arm64.txt
           cmd /c "echo y|`"$sdkmanager`" --licenses" | Out-Null
-          & $sdkmanager "platform-tools" "emulator" "system-images;android-34;default;arm64-v8a"
+          & $sdkmanager "platform-tools" "emulator" "system-images;android-34;default;arm64-v8a" 2>&1 | Tee-Object windows-arm64-evidence/sdk-install.txt
 
-          if (-not (Test-Path $emulator)) {
-            "EMULATOR_BINARY_NOT_AVAILABLE" | Tee-Object windows-arm64-evidence/RESULT.txt
-            exit 0
-          }
+          if (-not (Test-Path $emulator)) { throw 'Android emulator.exe was not installed' }
           & $emulator -version 2>&1 | Tee-Object windows-arm64-evidence/emulator-version.txt
           & $emulator -accel-check 2>&1 | Tee-Object windows-arm64-evidence/accel-check.txt
 
           cmd /c "echo no|`"$avdmanager`" create avd --force --name $env:AVD_NAME --package `"system-images;android-34;default;arm64-v8a`" --device `"pixel_6`""
           & $emulator -list-avds 2>&1 | Tee-Object windows-arm64-evidence/avds.txt
+          if (-not (Select-String -Path windows-arm64-evidence/avds.txt -Pattern $env:AVD_NAME -Quiet)) { throw 'ARM64 AVD was not created' }
 
-      - name: Attempt Android ARM64 boot
+      - name: Attempt Android ARM64 boot without acceleration
         shell: pwsh
         run: |
-          if (-not $env:ANDROID_HOME) { exit 0 }
+          $ErrorActionPreference = 'Stop'
           $emulator = "$env:ANDROID_HOME\emulator\emulator.exe"
           $adb = "$env:ANDROID_HOME\platform-tools\adb.exe"
-          if (-not (Test-Path $emulator)) { exit 0 }
-          if (-not (Test-Path windows-arm64-evidence/avds.txt)) { exit 0 }
-          if (-not (Select-String -Path windows-arm64-evidence/avds.txt -Pattern $env:AVD_NAME -Quiet)) { exit 0 }
-
           & $adb kill-server 2>$null
           & $adb start-server
           $log = Join-Path $PWD 'windows-arm64-evidence\emulator.log'
-          $args = @('-avd',$env:AVD_NAME,'-port','5554','-no-window','-noaudio','-no-boot-anim','-no-snapshot','-gpu','swiftshader_indirect','-camera-back','none','-camera-front','none','-verbose')
-          $p = Start-Process -FilePath $emulator -ArgumentList $args -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
+          $err = Join-Path $PWD 'windows-arm64-evidence\emulator.err.log'
+          $args = @('-avd',$env:AVD_NAME,'-port','5554','-no-window','-noaudio','-no-boot-anim','-no-snapshot','-gpu','swiftshader_indirect','-accel','off','-camera-back','none','-camera-front','none','-verbose')
+          $p = Start-Process -FilePath $emulator -ArgumentList $args -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
           $p.Id | Out-File windows-arm64-evidence/emulator.pid
 
           $boot = $false
@@ -102,20 +103,22 @@ jobs:
           if ($boot) {
             & $adb -s emulator-5554 shell getprop ro.product.cpu.abi | Tee-Object windows-arm64-evidence/guest-abi.txt
             & $adb -s emulator-5554 shell getprop ro.build.version.sdk | Tee-Object windows-arm64-evidence/api.txt
+            & $adb -s emulator-5554 shell uname -m | Tee-Object windows-arm64-evidence/guest-uname.txt
+            if ((Get-Content windows-arm64-evidence/guest-abi.txt).Trim() -ne 'arm64-v8a') { throw 'Guest ABI is not arm64-v8a' }
             "RESULTADO FINAL: Windows ARM64 -> Android ARM64 emulator PASS" | Tee-Object windows-arm64-evidence/RESULT.txt
             & $adb -s emulator-5554 emu kill
           } else {
             "RESULTADO FINAL: Windows ARM64 -> Android ARM64 emulator FAIL" | Tee-Object windows-arm64-evidence/RESULT.txt
             if (Test-Path $log) { Get-Content $log -Tail 250 }
-            if (Test-Path "$log.err") { Get-Content "$log.err" -Tail 250 }
-            exit 1
+            if (Test-Path $err) { Get-Content $err -Tail 250 }
+            throw 'Android ARM64 did not boot on Windows ARM64 runner'
           }
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ARL-Windows-ARM64-Android14-Emulator-Probe
+          name: ARL-Windows-ARM64-Android14-Emulator-Probe-v2
           path: windows-arm64-evidence/*
           if-no-files-found: warn
           retention-days: 14
