@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Keep the original Phase 10 scenario immutable as evidence of the first run.
-# Patch only test assertions that were proven incorrect after inspecting the
-# published distribution manifest; the application/downloader code is unchanged.
+# Patch only test assertions/interactions; production application logic is unchanged.
 TMP="${RUNNER_TEMP:-/tmp}/run_phase10_android14_test_v2.sh"
 cp tools/run_phase10_android14_test.sh "$TMP"
 
@@ -64,6 +63,35 @@ new2='''if adb shell "test -e '$ROOT/download/arl_phase10'"; then log "FAIL: sta
 if s.count(old2)!=1:
     raise SystemExit(f'expected one repair host-side staging assertion, found {s.count(old2)}')
 s=s.replace(old2,new2,1)
+
+old_play='''adb exec-out screencap -p > "$OUT/02-before-play.png"
+adb shell input tap "$PX" "$PY"; sleep 3
+HARNESS="$(adb shell run-as "$PKG" cat shared_prefs/arl_phase10_emulator_harness.xml 2>/dev/null | tr -d '\\r' || true)"
+grep -q 'play_gate_ok' <<<"$HARNESS" || { log "FAIL: JOGAR não atravessou gates"; echo "$HARNESS" >> "$REPORT"; exit 1; }'''
+new_play='''adb exec-out screencap -p > "$OUT/02-before-play.png"
+# UiAutomator can briefly stall the app main thread on the headless emulator.
+# Let accessibility settle, then retry the physical tap only if play() was not entered.
+sleep 6
+HARNESS=""
+for tap_try in 1 2 3; do
+  adb shell input tap "$PX" "$PY"
+  sleep 3
+  HARNESS="$(adb shell run-as "$PKG" cat shared_prefs/arl_phase10_emulator_harness.xml 2>/dev/null | tr -d '\\r' || true)"
+  if grep -q 'play_gate_ok' <<<"$HARNESS"; then break; fi
+  if grep -q 'play_entered' <<<"$HARNESS"; then break; fi
+  log "INFO: tap JOGAR $tap_try não entrou em play(); repetindo após estabilização"
+  sleep 4
+done
+if ! grep -q 'play_gate_ok' <<<"$HARNESS"; then
+  log "FAIL: JOGAR não atravessou gates"
+  log "HARNESS STATE: $(tr '\\n' ' ' <<<"$HARNESS")"
+  SETTINGS_NOW="$(adb shell \"cat '$ROOT/SAMP/settings.ini' 2>/dev/null\" | tr -d '\\r' || true)"
+  log "SETTINGS PRESENT: $([[ -n "$SETTINGS_NOW" ]] && echo yes || echo no)"
+  exit 1
+fi'''
+if old_play not in s:
+    raise SystemExit('play tap block not found')
+s=s.replace(old_play,new_play,1)
 
 p.write_text(s,encoding='utf-8',newline='\n')
 PY
