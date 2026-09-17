@@ -1,0 +1,120 @@
+name: Phase 10 - Probe macOS ARM64 Android Emulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-native-arm64-runtime-test
+    paths:
+      - .github/workflows/probe-macos-arm64-android-emulator.yml
+
+permissions:
+  contents: read
+
+jobs:
+  boot-android-arm64-on-macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      AVD_NAME: arl_arm64_api34_macos
+    steps:
+      - name: Probe Apple Silicon host and Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p macos-arm64-emulator-evidence
+          uname -a | tee macos-arm64-emulator-evidence/uname.txt
+          uname -m | tee macos-arm64-emulator-evidence/host_arch.txt
+          sysctl -n machdep.cpu.brand_string 2>/dev/null | tee macos-arm64-emulator-evidence/cpu.txt || true
+          sysctl -n kern.hv_support 2>/dev/null | tee macos-arm64-emulator-evidence/hv_support.txt || true
+          test "$(uname -m)" = "arm64"
+
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+          echo "ANDROID_SDK=$SDK" | tee macos-arm64-emulator-evidence/sdk.txt
+          test -x "$SDK/cmdline-tools/latest/bin/sdkmanager"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK/emulator" >> "$GITHUB_PATH"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
+      - name: Install Android 14 ARM64 image and emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "emulator" \
+            "system-images;android-34;default;arm64-v8a"
+
+          mkdir -p "$HOME/.android/avd"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --force \
+            --name "$AVD_NAME" \
+            --package "system-images;android-34;default;arm64-v8a" \
+            --device "pixel_6"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | tee macos-arm64-emulator-evidence/avds.txt
+          grep -q "$AVD_NAME" macos-arm64-emulator-evidence/avds.txt
+
+      - name: Boot Android ARM64 without nested acceleration
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb kill-server || true
+          adb start-server
+
+          "$ANDROID_HOME/emulator/emulator" \
+            -avd "$AVD_NAME" \
+            -port 5554 \
+            -no-window \
+            -noaudio \
+            -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader_indirect \
+            -accel off \
+            -camera-back none \
+            -camera-front none \
+            -verbose \
+            > macos-arm64-emulator-evidence/emulator.log 2>&1 &
+          EMU_PID=$!
+          echo "$EMU_PID" > macos-arm64-emulator-evidence/emulator.pid
+
+          BOOT=0
+          for i in $(seq 1 180); do
+            if ! kill -0 "$EMU_PID" 2>/dev/null; then
+              echo 'Emulator process exited before Android boot' >&2
+              tail -250 macos-arm64-emulator-evidence/emulator.log || true
+              exit 1
+            fi
+            STATE="$(adb -s emulator-5554 get-state 2>/dev/null || true)"
+            DONE="$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            echo "attempt=$i state=$STATE boot=$DONE"
+            if [ "$DONE" = "1" ]; then BOOT=1; break; fi
+            sleep 5
+          done
+
+          if [ "$BOOT" != "1" ]; then
+            echo 'ARM64 Android did not boot within probe window' >&2
+            tail -300 macos-arm64-emulator-evidence/emulator.log || true
+            exit 1
+          fi
+
+          adb -s emulator-5554 shell getprop ro.product.cpu.abi | tee macos-arm64-emulator-evidence/guest_abi.txt
+          adb -s emulator-5554 shell getprop ro.build.version.release | tee macos-arm64-emulator-evidence/android_version.txt
+          adb -s emulator-5554 shell getprop ro.build.version.sdk | tee macos-arm64-emulator-evidence/api.txt
+          adb -s emulator-5554 shell uname -m | tee macos-arm64-emulator-evidence/guest_uname.txt
+          test "$(tr -d '\r' < macos-arm64-emulator-evidence/guest_abi.txt)" = "arm64-v8a"
+          test "$(tr -d '\r' < macos-arm64-emulator-evidence/api.txt)" = "34"
+          echo 'RESULTADO FINAL: macOS ARM64 -> Android 14 ARM64 emulator PASS' | tee macos-arm64-emulator-evidence/RESULT.txt
+          adb -s emulator-5554 emu kill || true
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-macOS-ARM64-Android14-Emulator-Probe
+          path: macos-arm64-emulator-evidence/*
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
