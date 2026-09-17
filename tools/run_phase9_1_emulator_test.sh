@@ -14,6 +14,45 @@ log() {
   echo "$*" | tee -a "$REPORT"
 }
 
+# Android's dumpsys output changes between releases. Android 14 on the GitHub
+# emulator does not always expose the legacy mResumedActivity line, so use
+# several independent signals instead of depending on a single key.
+is_main_visible() {
+  local state
+
+  state="$(adb shell dumpsys activity top 2>/dev/null || true)"
+  if grep -Eq 'ACTIVITY[[:space:]]+com\.samp\.mobile/\.launcher\.MainActivity' <<<"$state"; then
+    return 0
+  fi
+
+  state="$(adb shell dumpsys activity activities 2>/dev/null || true)"
+  if grep -Eq '(topResumedActivity|mResumedActivity|ResumedActivity).*com\.samp\.mobile/\.launcher\.MainActivity' <<<"$state"; then
+    return 0
+  fi
+
+  state="$(adb shell dumpsys window windows 2>/dev/null || true)"
+  if grep -Eq '(mCurrentFocus|mFocusedApp).*com\.samp\.mobile/\.launcher\.MainActivity' <<<"$state"; then
+    return 0
+  fi
+
+  # Last-resort signal: ActivityTaskManager reports the launcher as displayed.
+  grep -Eq 'Displayed com\.samp\.mobile/\.launcher\.MainActivity|START .*cmp=com\.samp\.mobile/\.launcher\.MainActivity' "$OUT/logcat.txt" 2>/dev/null
+}
+
+dump_focus_state() {
+  {
+    echo
+    echo '===== dumpsys activity top ====='
+    adb shell dumpsys activity top 2>/dev/null | head -n 120 || true
+    echo
+    echo '===== resumed/top activity candidates ====='
+    adb shell dumpsys activity activities 2>/dev/null | grep -E 'ResumedActivity|topResumedActivity|mResumedActivity|com\.samp\.mobile' | head -n 120 || true
+    echo
+    echo '===== focused window candidates ====='
+    adb shell dumpsys window windows 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp|com\.samp\.mobile' | head -n 120 || true
+  } >> "$REPORT"
+}
+
 APK="${ARL_TEST_APK:-}"
 if [[ -z "$APK" ]]; then
   APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
@@ -57,9 +96,8 @@ adb shell am start -W -n "$SPLASH" | tee -a "$REPORT"
 
 log "INFO: aguardando instalação/verificação real do GTA Brasil embutido..."
 READY=0
-for i in $(seq 1 180); do
-  RESUMED="$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 'mResumedActivity' || true)"
-  if grep -q 'com.samp.mobile/.launcher.MainActivity' <<<"$RESUMED"; then
+for i in $(seq 1 72); do
+  if is_main_visible; then
     READY=1
     log "PASS: launcher principal aberto após bootstrap (tentativa $i)"
     break
@@ -71,7 +109,12 @@ for i in $(seq 1 180); do
   fi
   sleep 5
 done
-[[ "$READY" = 1 ]] || { log "FAIL: launcher não abriu em 15 minutos"; tail -n 200 "$OUT/logcat.txt" | tee -a "$REPORT"; exit 1; }
+if [[ "$READY" != 1 ]]; then
+  log "FAIL: launcher não abriu dentro da janela de bootstrap"
+  dump_focus_state
+  tail -n 200 "$OUT/logcat.txt" | tee -a "$REPORT"
+  exit 1
+fi
 
 adb exec-out screencap -p > "$OUT/launcher-after-bootstrap.png"
 adb shell uiautomator dump /sdcard/arl-window.xml >/dev/null
@@ -104,15 +147,18 @@ adb shell am force-stop "$PKG"
 SECOND_START=$(date +%s)
 adb shell am start -W -n "$SPLASH" >/dev/null
 SECOND_READY=0
-for i in $(seq 1 24); do
-  RESUMED="$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 'mResumedActivity' || true)"
-  if grep -q 'com.samp.mobile/.launcher.MainActivity' <<<"$RESUMED"; then
+for i in $(seq 1 30); do
+  if is_main_visible; then
     SECOND_READY=1
     break
   fi
   sleep 2
 done
-[[ "$SECOND_READY" = 1 ]] || { log "FAIL: segundo boot não chegou ao launcher"; exit 1; }
+if [[ "$SECOND_READY" != 1 ]]; then
+  log "FAIL: segundo boot não chegou ao launcher"
+  dump_focus_state
+  exit 1
+fi
 SECOND_SECONDS=$(( $(date +%s) - SECOND_START ))
 log "PASS: segundo boot reutilizou instalação existente (${SECOND_SECONDS}s)"
 
