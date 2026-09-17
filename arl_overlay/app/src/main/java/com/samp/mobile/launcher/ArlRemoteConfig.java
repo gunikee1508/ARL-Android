@@ -14,7 +14,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Remote launcher configuration + DATA manifest + APK update metadata. */
+/** Remote launcher configuration + Phase 10 package manifest + APK update metadata. */
 public final class ArlRemoteConfig {
     public interface Callback { void onReady(); }
 
@@ -31,6 +31,30 @@ public final class ArlRemoteConfig {
 
         public boolean hasSha256() {
             return sha256.matches("(?i)[0-9a-f]{64}");
+        }
+    }
+
+    public static final class DataPackage {
+        public final String id;
+        public final String url;
+        public final String sha256;
+        public final long bytes;
+        public final List<DataFile> files;
+
+        DataPackage(String id, String url, String sha256, long bytes, List<DataFile> files) {
+            this.id = id == null ? "" : id.trim();
+            this.url = url == null ? "" : url.trim();
+            this.sha256 = sha256 == null ? "" : sha256.trim().toLowerCase();
+            this.bytes = bytes;
+            this.files = Collections.unmodifiableList(new ArrayList<>(files));
+        }
+
+        public boolean valid() {
+            return !id.isEmpty()
+                    && validHttp(url)
+                    && sha256.matches("(?i)[0-9a-f]{64}")
+                    && bytes > 0
+                    && !files.isEmpty();
         }
     }
 
@@ -55,6 +79,7 @@ public final class ArlRemoteConfig {
     private static volatile boolean dataReleaseDeclared = false;
     private static volatile boolean dataManifestReady = false;
     private static volatile List<DataFile> dataFiles = Collections.emptyList();
+    private static volatile List<DataPackage> dataPackages = Collections.emptyList();
 
     private ArlRemoteConfig() {}
 
@@ -79,11 +104,14 @@ public final class ArlRemoteConfig {
     public static boolean hasDataRelease(){ return dataReleaseDeclared; }
     public static boolean dataManifestReady(){ return dataManifestReady; }
     public static List<DataFile> dataFiles(){ return dataFiles; }
+    public static List<DataPackage> dataPackages(){ return dataPackages; }
+    public static boolean packageMode(){ return !dataPackages.isEmpty(); }
 
     public static void refresh(Context context, Callback cb) {
         final Context app = context.getApplicationContext();
         dataManifestReady = false;
         dataFiles = Collections.emptyList();
+        dataPackages = Collections.emptyList();
         appReleaseDeclared = false;
 
         StringRequest req = new StringRequest(ArlConfig.REMOTE_CONFIG,
@@ -132,17 +160,26 @@ public final class ArlRemoteConfig {
                             dataManifestUrl = src.optString("manifestUrl",
                                     src.optString("manifest", "")).trim();
 
-                            dataReleaseDeclared = !dataVersion.isEmpty()
+                            List<DataPackage> inlinePackages = parsePackages(src);
+                            if(!inlinePackages.isEmpty()) {
+                                setPackages(inlinePackages);
+                                dataManifestReady = true;
+                            } else {
+                                List<DataFile> inline = parseFiles(src);
+                                if(!inline.isEmpty()) {
+                                    dataFiles = Collections.unmodifiableList(inline);
+                                    dataManifestReady = true;
+                                } else if(validHttp(dataManifestUrl) && !dataVersion.isEmpty()) {
+                                    fetchExternalManifest = true;
+                                }
+                            }
+
+                            boolean legacy = !dataVersion.isEmpty()
                                     && validHttp(dataUrl)
                                     && dataSha256.matches("(?i)[0-9a-f]{64}");
-
-                            List<DataFile> inline = parseFiles(src);
-                            if(!inline.isEmpty()) {
-                                dataFiles = Collections.unmodifiableList(inline);
-                                dataManifestReady = true;
-                            } else if(dataReleaseDeclared && validHttp(dataManifestUrl)) {
-                                fetchExternalManifest = true;
-                            }
+                            boolean packaged = !dataVersion.isEmpty()
+                                    && validHttp(dataManifestUrl);
+                            dataReleaseDeclared = legacy || packaged || !inlinePackages.isEmpty();
                         } else {
                             dataReleaseDeclared = false;
                         }
@@ -173,14 +210,21 @@ public final class ArlRemoteConfig {
                         if(!manifestVersion.isEmpty() && !manifestVersion.equals(dataVersion))
                             throw new IllegalStateException("manifest version mismatch");
 
-                        List<DataFile> parsed = parseFiles(root);
-                        if(parsed.isEmpty())
-                            throw new IllegalStateException("empty DATA manifest");
-
-                        dataFiles = Collections.unmodifiableList(parsed);
-                        dataManifestReady = true;
+                        List<DataPackage> packages = parsePackages(root);
+                        if(!packages.isEmpty()) {
+                            setPackages(packages);
+                            dataManifestReady = true;
+                        } else {
+                            List<DataFile> parsed = parseFiles(root);
+                            if(parsed.isEmpty())
+                                throw new IllegalStateException("empty DATA manifest");
+                            dataFiles = Collections.unmodifiableList(parsed);
+                            dataPackages = Collections.emptyList();
+                            dataManifestReady = true;
+                        }
                     } catch(Exception ignored) {
                         dataFiles = Collections.emptyList();
+                        dataPackages = Collections.emptyList();
                         dataManifestReady = false;
                     }
                     cb.onReady();
@@ -189,11 +233,43 @@ public final class ArlRemoteConfig {
             new Response.ErrorListener() {
                 @Override public void onErrorResponse(VolleyError error) {
                     dataFiles = Collections.emptyList();
+                    dataPackages = Collections.emptyList();
                     dataManifestReady = false;
                     cb.onReady();
                 }
             });
         Volley.newRequestQueue(context.getApplicationContext()).add(req);
+    }
+
+    private static void setPackages(List<DataPackage> packages) {
+        ArrayList<DataPackage> valid = new ArrayList<>();
+        ArrayList<DataFile> all = new ArrayList<>();
+        for(DataPackage pkg : packages) {
+            if(pkg == null || !pkg.valid()) continue;
+            valid.add(pkg);
+            all.addAll(pkg.files);
+        }
+        dataPackages = Collections.unmodifiableList(valid);
+        dataFiles = Collections.unmodifiableList(all);
+    }
+
+    private static List<DataPackage> parsePackages(JSONObject src) {
+        ArrayList<DataPackage> next = new ArrayList<>();
+        JSONArray packages = src.optJSONArray("packages");
+        if(packages == null) return next;
+
+        for(int i = 0; i < packages.length(); i++) {
+            JSONObject item = packages.optJSONObject(i);
+            if(item == null) continue;
+            String id = item.optString("id", "").trim();
+            String url = item.optString("url", "").trim();
+            String sha = item.optString("sha256", "").trim();
+            long bytes = item.optLong("bytes", -1L);
+            List<DataFile> files = parseFiles(item);
+            DataPackage pkg = new DataPackage(id, url, sha, bytes, files);
+            if(pkg.valid()) next.add(pkg);
+        }
+        return next;
     }
 
     private static List<DataFile> parseFiles(JSONObject src) {
