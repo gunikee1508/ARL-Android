@@ -210,6 +210,12 @@ def patch_main(path: Path) -> None:
         raise SystemExit("play: method not found")
     prefix, play_part = text[:play_start], text[play_start:]
     play_part = replace_once(play_part, play_needle, play_insert, "play embedded gate")
+
+    # When the bundled layer is present, it is authoritative. The legacy remote DATA gate
+    # must not block JOGAR after the embedded package has already been verified/installed.
+    legacy_gate_old = """        if (ArlDataManager.isConfigured() && ArlDataManager.requiresRepair(this)) {"""
+    legacy_gate_new = """        if (!ArlEmbeddedDataManager.isAvailable(this)\n                && ArlDataManager.isConfigured()\n                && ArlDataManager.requiresRepair(this)) {"""
+    play_part = replace_once(play_part, legacy_gate_old, legacy_gate_new, "play legacy remote gate")
     text = prefix + play_part
 
     path.write_text(text, encoding="utf-8")
