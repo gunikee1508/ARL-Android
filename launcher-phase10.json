@@ -1,0 +1,23 @@
+{
+  "maintenance": false,
+  "server": {
+    "host": "play.arl-samprpg.site",
+    "port": 7777
+  },
+  "app": {
+    "latestVersionCode": 111,
+    "minVersionCode": 111,
+    "versionName": "1.0.4-phase10-cdn",
+    "apkUrl": "",
+    "sha256": "",
+    "bytes": -1,
+    "mandatory": false
+  },
+  "client": {
+    "version": "0.3.7-R3",
+    "data": {
+      "version": "phase10-gta-brasil-6417354",
+      "manifestUrl": "https://github.com/gunikee1508/ARL-Android/releases/download/phase10-data-v1/distribution.json"
+    }
+  }
+}
