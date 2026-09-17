@@ -29,7 +29,6 @@ def main():
         if not p.is_file():
             die('arquivo ausente: ' + str(p))
 
-    # Ensure ActivityScenario is directly available to the instrumentation test.
     g = read(gradle)
     dep = "    androidTestImplementation 'androidx.test:core:1.4.0'\n"
     if "androidx.test:core:" not in g:
@@ -39,7 +38,6 @@ def main():
         g = g.replace(anchor, anchor + dep, 1)
     write(gradle, g)
 
-    # Replace the basic probe Activity with a report-producing self-test Activity.
     write(activity, r'''package com.samp.mobile.launcher;
 
 import android.app.Activity;
@@ -123,8 +121,6 @@ public class NativeProbeActivity extends Activity {
         put("arlprobe_ok", probeOk);
         put("arlprobe_result", probeResult);
 
-        // This is the real Phase 10 libsamp.so. Its JNI_OnLoad must detect the
-        // intentionally absent libGTASA.so and return JNI_VERSION_1_6 before hooks.
         try {
             System.loadLibrary("samp");
             sampOk = true;
@@ -173,7 +169,7 @@ public class NativeProbeActivity extends Activity {
                 + "sdk=" + Build.VERSION.SDK_INT + "\n"
                 + "device=" + Build.MANUFACTURER + " " + Build.MODEL + "\n";
 
-        Log.i(TAG, report.replace('\n', ' | '));
+        Log.i(TAG, report.replace("\n", " | "));
         TextView view = new TextView(this);
         view.setTextSize(16f);
         view.setPadding(32, 32, 32, 32);
@@ -186,9 +182,6 @@ public class NativeProbeActivity extends Activity {
 ''')
 
     m = read(manifest)
-
-    # Remove launcher intent filters from every existing Activity. This test APK
-    # must never auto-launch com.samp.mobile.game.SAMP (which statically loads GTASA).
     m = re.sub(
         r'\s*<intent-filter>\s*<action\s+android:name="android.intent.action.MAIN"\s*/>\s*<category\s+android:name="android.intent.category.LAUNCHER"\s*/>\s*</intent-filter>',
         '',
@@ -196,7 +189,6 @@ public class NativeProbeActivity extends Activity {
         flags=re.S,
     )
 
-    # Convert the self-closing probe Activity into the sole launcher Activity.
     probe_pattern = re.compile(
         r'<activity\s+android:name="\.launcher\.NativeProbeActivity"(?P<attrs>[^>]*)/>',
         re.S,
@@ -214,8 +206,6 @@ public class NativeProbeActivity extends Activity {
     m = m2
     write(manifest, m)
 
-    # Instrumentation test is intentionally ARM64/device-only. It is compiled in CI
-    # now and can be executed later on a real/cloud ARM64 Android without GTA.
     test = root / 'app/src/androidTest/java/com/samp/mobile/launcher/NativeProbeInstrumentedTest.java'
     write(test, r'''package com.samp.mobile.launcher;
 
@@ -251,7 +241,6 @@ public class NativeProbeInstrumentedTest {
 }
 ''')
 
-    # Invariants: one launcher only, no GTASA binary, test source present.
     final_manifest = read(manifest)
     if final_manifest.count('android.intent.action.MAIN') != 1:
         die('manifest deve ter exatamente um MAIN launcher')
