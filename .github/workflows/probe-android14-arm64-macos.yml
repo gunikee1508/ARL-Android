@@ -1,0 +1,107 @@
+name: Phase 10 - Probe Android 14 ARM64 on macOS ARM
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-native-arm64-runtime-test
+    paths:
+      - .github/workflows/probe-android14-arm64-macos.yml
+
+permissions:
+  contents: read
+
+jobs:
+  boot-android-arm64:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      AVD_NAME: arl_arm64_api34_mac
+    steps:
+      - name: Inspect Apple Silicon runner and Android tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          test "$(uname -m)" = "arm64"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          "$ANDROID_HOME/emulator/emulator" -version
+          "$ANDROID_HOME/emulator/emulator" -accel-check || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list | grep -E 'system-images;android-34;(default|google_apis);arm64-v8a' | head -20 || true
+
+      - name: Install Android 14 ARM64 image
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "emulator" \
+            "system-images;android-34;default;arm64-v8a"
+          mkdir -p "$HOME/.android/avd"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --force \
+            --name "$AVD_NAME" \
+            --package "system-images;android-34;default;arm64-v8a" \
+            --device "pixel_6"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list avd
+
+      - name: Boot Android 14 ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p mac-arm64-emulator-evidence
+          "$ANDROID_HOME/platform-tools/adb" kill-server || true
+          "$ANDROID_HOME/platform-tools/adb" start-server
+          "$ANDROID_HOME/emulator/emulator" \
+            -avd "$AVD_NAME" \
+            -port 5554 \
+            -no-window \
+            -noaudio \
+            -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader_indirect \
+            -camera-back none \
+            -camera-front none \
+            -verbose \
+            > mac-arm64-emulator-evidence/emulator.log 2>&1 &
+          EMU_PID=$!
+          echo "$EMU_PID" > mac-arm64-emulator-evidence/emulator.pid
+
+          BOOT=0
+          for i in $(seq 1 180); do
+            if ! kill -0 "$EMU_PID" 2>/dev/null; then
+              echo 'Emulator process exited before boot' >&2
+              tail -250 mac-arm64-emulator-evidence/emulator.log || true
+              exit 1
+            fi
+            DONE="$("$ANDROID_HOME/platform-tools/adb" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            STATE="$("$ANDROID_HOME/platform-tools/adb" -s emulator-5554 get-state 2>/dev/null || true)"
+            echo "attempt=$i state=$STATE boot=$DONE"
+            if [ "$DONE" = "1" ]; then BOOT=1; break; fi
+            sleep 5
+          done
+          if [ "$BOOT" != "1" ]; then
+            echo 'Android ARM64 did not boot' >&2
+            tail -300 mac-arm64-emulator-evidence/emulator.log || true
+            exit 1
+          fi
+
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          "$ADB" -s emulator-5554 shell getprop ro.product.cpu.abi | tee mac-arm64-emulator-evidence/guest_abi.txt
+          "$ADB" -s emulator-5554 shell getprop ro.build.version.sdk | tee mac-arm64-emulator-evidence/api.txt
+          "$ADB" -s emulator-5554 shell uname -m | tee mac-arm64-emulator-evidence/uname.txt
+          test "$(tr -d '\r' < mac-arm64-emulator-evidence/guest_abi.txt)" = "arm64-v8a"
+          test "$(tr -d '\r' < mac-arm64-emulator-evidence/api.txt)" = "34"
+          echo 'RESULTADO FINAL: ANDROID 14 ARM64 ON MACOS ARM PASS' | tee mac-arm64-emulator-evidence/RESULT.txt
+          "$ADB" -s emulator-5554 emu kill || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Android14-ARM64-macOS-Probe
+          path: mac-arm64-emulator-evidence/*
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
