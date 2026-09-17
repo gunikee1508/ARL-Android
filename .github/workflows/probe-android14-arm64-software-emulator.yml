@@ -18,6 +18,7 @@ jobs:
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_AVD_HOME: /home/runner/.config/.android/avd
       AVD_NAME: arl_arm64_api34
     steps:
       - name: Prepare Android ARM64 image
@@ -32,13 +33,14 @@ jobs:
             "platform-tools" \
             "emulator" \
             "system-images;android-34;default;arm64-v8a"
+          mkdir -p "$ANDROID_AVD_HOME"
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             --force \
             --name "$AVD_NAME" \
             --package "system-images;android-34;default;arm64-v8a" \
             --device "pixel_6"
           "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list avd
-          find "$HOME" -maxdepth 5 -type f -name config.ini -path "*${AVD_NAME}*" -print || true
+          find "$ANDROID_AVD_HOME" -maxdepth 3 -type f -name config.ini -print || true
 
       - name: Boot ARM64 Android 14 by software emulation
         shell: bash
