@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.StatFs;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -14,16 +15,32 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-/** ARL Phase 2 DATA updater with archive and installed-file verification. */
+/**
+ * ARL Phase 10 DATA updater.
+ *
+ * Supports:
+ * - legacy single ZIP releases;
+ * - package/chunk manifests;
+ * - package-level differential repair;
+ * - resumable HTTP Range downloads;
+ * - SHA-256 validation for every package and installed file;
+ * - safe ZIP extraction and atomic file replacement.
+ */
 public final class ArlDataManager {
     public interface Listener {
         void onState(String text);
         void onProgress(int percent, String text);
         void onComplete(boolean success, String message);
+    }
+
+    private interface DownloadProgress {
+        void onBytes(long bytes);
     }
 
     private static final String PREFS = "arl_data_state";
@@ -36,11 +53,16 @@ public final class ArlDataManager {
     private ArlDataManager() {}
 
     public static boolean isConfigured() {
+        String version = safe(ArlRemoteConfig.dataVersion());
+        if (version.isEmpty() || !ArlRemoteConfig.dataManifestReady()) return false;
+
+        if (ArlRemoteConfig.packageMode()) {
+            return !ArlRemoteConfig.dataPackages().isEmpty();
+        }
+
         String url = safe(ArlRemoteConfig.dataUrl());
         String sha = safe(ArlRemoteConfig.dataSha256());
-        String version = safe(ArlRemoteConfig.dataVersion());
-        return !version.isEmpty()
-                && (url.startsWith("https://") || url.startsWith("http://"))
+        return (url.startsWith("https://") || url.startsWith("http://"))
                 && sha.matches("(?i)[0-9a-f]{64}");
     }
 
@@ -67,29 +89,241 @@ public final class ArlDataManager {
             try {
                 if (!isConfigured()) {
                     complete(listener, false,
-                            "A DATA do ARL ainda não foi publicada no launcher.json.");
+                            "A distribuição do ARL ainda não está disponível.");
                     return;
                 }
 
                 if (!force && !requiresRepair(app)) {
                     progress(listener, 100, "ARQUIVOS VERIFICADOS");
                     complete(listener, true,
-                            "Arquivos do ARL estão íntegros. Versão " +
-                                    ArlRemoteConfig.dataVersion() + ".");
+                            "Arquivos do ARL estão íntegros. Versão "
+                                    + ArlRemoteConfig.dataVersion() + ".");
                     return;
                 }
-                runRepair(app, listener);
+
+                if (ArlRemoteConfig.packageMode()) runPackageRepair(app, force, listener);
+                else runLegacyRepair(app, listener);
             } catch (Exception e) {
                 complete(listener, false, "Falha ao reparar DATA: " + readable(e));
             }
         }, "ARL-Data-Updater").start();
     }
 
-    private static void runRepair(Context context, Listener listener) throws Exception {
+    private static void runPackageRepair(Context context, boolean force, Listener listener)
+            throws Exception {
         File root = context.getExternalFilesDir(null);
         if (root == null) throw new IllegalStateException("armazenamento indisponível");
 
-        File work = new File(root, "download/arl_phase2");
+        List<ArlRemoteConfig.DataPackage> needed = new ArrayList<>();
+        for (ArlRemoteConfig.DataPackage pkg : ArlRemoteConfig.dataPackages()) {
+            if (force || packageNeedsRepair(root, pkg)) needed.add(pkg);
+        }
+
+        if (needed.isEmpty()) {
+            persistPackageState(context);
+            progress(listener, 100, "CLIENTE JÁ ATUALIZADO");
+            complete(listener, true,
+                    "Arquivos do ARL já estão na versão "
+                            + ArlRemoteConfig.dataVersion() + ".");
+            return;
+        }
+
+        ensureFreeSpace(root, needed);
+
+        File work = new File(root, "download/arl_phase10");
+        if (!work.mkdirs() && !work.isDirectory())
+            throw new IllegalStateException("não foi possível criar diretório de download");
+
+        long totalDownload = 0L;
+        for (ArlRemoteConfig.DataPackage pkg : needed)
+            totalDownload += Math.max(1L, pkg.bytes);
+
+        long completedDownload = 0L;
+        int index = 0;
+
+        for (ArlRemoteConfig.DataPackage pkg : needed) {
+            index++;
+            String label = "PACOTE " + index + "/" + needed.size() + " • " + pkg.id;
+            state(listener, "BAIXANDO " + label);
+
+            File part = new File(work, sanitizeId(pkg.id) + ".zip.part");
+            File stage = new File(work, "stage-" + sanitizeId(pkg.id));
+            deleteTree(stage);
+            if (!stage.mkdirs() && !stage.isDirectory())
+                throw new IllegalStateException("não foi possível criar staging de " + pkg.id);
+
+            final long before = completedDownload;
+            final long total = totalDownload;
+            DownloadResult result = downloadResume(
+                    pkg.url, part, pkg.bytes, pkg.sha256,
+                    bytes -> {
+                        int p = (int) Math.min(88L,
+                                ((before + bytes) * 88L) / Math.max(1L, total));
+                        progress(listener, p,
+                                "BAIXANDO " + label + " • " + human(before + bytes)
+                                        + " / " + human(total));
+                    });
+
+            if (result.bytes != pkg.bytes)
+                throw new IllegalStateException("tamanho não confere em " + pkg.id);
+            if (!pkg.sha256.equalsIgnoreCase(result.sha256)) {
+                part.delete();
+                throw new SecurityException("SHA-256 não confere em " + pkg.id);
+            }
+
+            progress(listener, Math.min(94, 88 + (index * 6 / needed.size())),
+                    "VALIDANDO " + label);
+            unzipSafely(part, stage, pkg.bytes, listener);
+
+            for (ArlRemoteConfig.DataFile spec : pkg.files) {
+                if (!verifyFile(stage, spec))
+                    throw new SecurityException("arquivo inválido em " + pkg.id + ": " + spec.path);
+            }
+
+            mergeTree(stage, root);
+
+            for (ArlRemoteConfig.DataFile spec : pkg.files) {
+                if (!verifyFile(root, spec))
+                    throw new SecurityException("arquivo instalado inválido: " + spec.path);
+            }
+
+            completedDownload += pkg.bytes;
+            deleteTree(stage);
+            part.delete();
+        }
+
+        persistPackageState(context);
+        deleteTree(work);
+        progress(listener, 100, "CLIENTE ARL PRONTO");
+        complete(listener, true,
+                "Atualização diferencial concluída. Versão "
+                        + ArlRemoteConfig.dataVersion() + ".");
+    }
+
+    private static boolean packageNeedsRepair(File root, ArlRemoteConfig.DataPackage pkg) {
+        for (ArlRemoteConfig.DataFile spec : pkg.files) {
+            if (!verifyFile(root, spec)) return true;
+        }
+        return false;
+    }
+
+    private static void persistPackageState(Context context) {
+        prefs(context).edit()
+                .putString(KEY_VERSION, safe(ArlRemoteConfig.dataVersion()))
+                .putString(KEY_SHA256, "packages")
+                .apply();
+    }
+
+    private static void ensureFreeSpace(
+            File root, List<ArlRemoteConfig.DataPackage> packages) {
+        try {
+            long unpacked = 0L;
+            long largestPackage = 0L;
+            for (ArlRemoteConfig.DataPackage pkg : packages) {
+                largestPackage = Math.max(largestPackage, pkg.bytes);
+                for (ArlRemoteConfig.DataFile file : pkg.files)
+                    unpacked += Math.max(0L, file.bytes);
+            }
+            long required = unpacked + largestPackage + (96L * 1024L * 1024L);
+            StatFs stat = new StatFs(root.getAbsolutePath());
+            long available = stat.getAvailableBytes();
+            if (available < required) {
+                throw new IllegalStateException(
+                        "espaço insuficiente: precisa de ~" + human(required)
+                                + ", disponível " + human(available));
+            }
+        } catch (IllegalStateException e) {
+            throw e;
+        } catch (Exception ignored) {
+            // Storage reporting differs by vendor. Download verification still protects the install.
+        }
+    }
+
+    private static DownloadResult downloadResume(
+            String source,
+            File part,
+            long expectedBytes,
+            String expectedSha,
+            DownloadProgress progress) throws Exception {
+        File parent = part.getParentFile();
+        if (parent != null && !parent.mkdirs() && !parent.isDirectory())
+            throw new IllegalStateException("não foi possível criar diretório de download");
+
+        if (part.isFile() && part.length() == expectedBytes) {
+            String hash = sha256(part);
+            if (expectedSha.equalsIgnoreCase(hash))
+                return new DownloadResult(part.length(), hash);
+            part.delete();
+        } else if (part.isFile() && expectedBytes > 0 && part.length() > expectedBytes) {
+            part.delete();
+        }
+
+        long existing = part.isFile() ? part.length() : 0L;
+        HttpURLConnection c = (HttpURLConnection) new URL(source).openConnection();
+        c.setConnectTimeout(20000);
+        c.setReadTimeout(45000);
+        c.setInstanceFollowRedirects(true);
+        c.setRequestProperty("User-Agent", "ARL-Android/Phase10");
+        c.setRequestProperty("Accept-Encoding", "identity");
+        if (existing > 0) c.setRequestProperty("Range", "bytes=" + existing + "-");
+        c.connect();
+
+        int code = c.getResponseCode();
+        boolean append = existing > 0 && code == HttpURLConnection.HTTP_PARTIAL;
+        if (code < 200 || code >= 300) {
+            c.disconnect();
+            throw new IllegalStateException("HTTP " + code + " ao baixar pacote");
+        }
+
+        if (existing > 0 && code == HttpURLConnection.HTTP_OK) {
+            existing = 0L;
+            append = false;
+        }
+
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        if (append) {
+            try (BufferedInputStream old = new BufferedInputStream(
+                    new FileInputStream(part), BUFFER)) {
+                byte[] buf = new byte[BUFFER];
+                int n;
+                while ((n = old.read(buf)) != -1) digest.update(buf, 0, n);
+            }
+        }
+
+        long done = existing;
+        if (progress != null) progress.onBytes(done);
+
+        try (InputStream in = new BufferedInputStream(c.getInputStream(), BUFFER);
+             FileOutputStream fileOut = new FileOutputStream(part, append);
+             BufferedOutputStream out = new BufferedOutputStream(fileOut, BUFFER)) {
+            byte[] buf = new byte[BUFFER];
+            int n;
+            long lastReported = done;
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
+                digest.update(buf, 0, n);
+                done += n;
+                if (progress != null && (done - lastReported >= 256 * 1024 || done == expectedBytes)) {
+                    lastReported = done;
+                    progress.onBytes(done);
+                }
+            }
+            out.flush();
+            fileOut.getFD().sync();
+        } finally {
+            c.disconnect();
+        }
+
+        String hash = hex(digest.digest());
+        return new DownloadResult(done, hash);
+    }
+
+    /* Legacy single-ZIP mode kept as a fallback for older launcher.json releases. */
+    private static void runLegacyRepair(Context context, Listener listener) throws Exception {
+        File root = context.getExternalFilesDir(null);
+        if (root == null) throw new IllegalStateException("armazenamento indisponível");
+
+        File work = new File(root, "download/arl_legacy");
         File zipPart = new File(work, "arl-data.zip.part");
         File stage = new File(work, "stage");
         deleteTree(work);
@@ -97,7 +331,7 @@ public final class ArlDataManager {
             throw new IllegalStateException("não foi possível criar diretório temporário");
 
         state(listener, "BAIXANDO DATA DO ARL...");
-        DownloadResult result = download(ArlRemoteConfig.dataUrl(), zipPart, listener);
+        DownloadResult result = downloadLegacy(ArlRemoteConfig.dataUrl(), zipPart, listener);
 
         long expectedBytes = ArlRemoteConfig.dataBytes();
         if (expectedBytes > 0 && result.bytes != expectedBytes)
@@ -108,7 +342,7 @@ public final class ArlDataManager {
             throw new SecurityException("SHA-256 da DATA não confere");
 
         progress(listener, 86, "HASH DO PACOTE OK • EXTRAINDO...");
-        unzipSafely(zipPart, stage, listener);
+        unzipSafely(zipPart, stage, zipPart.length(), listener);
 
         progress(listener, 95, "VALIDANDO ARQUIVOS...");
         for (ArlRemoteConfig.DataFile spec : ArlRemoteConfig.dataFiles()) {
@@ -116,7 +350,6 @@ public final class ArlDataManager {
                 throw new SecurityException("arquivo inválido no pacote: " + spec.path);
         }
 
-        progress(listener, 97, "INSTALANDO ARQUIVOS...");
         mergeTree(stage, root);
 
         for (ArlRemoteConfig.DataFile spec : ArlRemoteConfig.dataFiles()) {
@@ -132,11 +365,11 @@ public final class ArlDataManager {
         deleteTree(work);
         progress(listener, 100, "DATA PRONTA");
         complete(listener, true,
-                "DATA do ARL instalada e verificada. Versão " +
-                        ArlRemoteConfig.dataVersion() + ".");
+                "DATA do ARL instalada e verificada. Versão "
+                        + ArlRemoteConfig.dataVersion() + ".");
     }
 
-    private static DownloadResult download(String source, File target, Listener listener)
+    private static DownloadResult downloadLegacy(String source, File target, Listener listener)
             throws Exception {
         File parent = target.getParentFile();
         if (parent != null) parent.mkdirs();
@@ -172,8 +405,8 @@ public final class ArlDataManager {
                         : (int) Math.min(84, done / (1024L * 1024L));
                 if (p != lastPercent) {
                     lastPercent = p;
-                    progress(listener, p, "BAIXANDO • " + human(done) +
-                            (total > 0 ? " / " + human(total) : ""));
+                    progress(listener, p, "BAIXANDO • " + human(done)
+                            + (total > 0 ? " / " + human(total) : ""));
                 }
             }
             out.flush();
@@ -184,12 +417,12 @@ public final class ArlDataManager {
         return new DownloadResult(done, hex(digest.digest()));
     }
 
-    private static void unzipSafely(File zip, File stage, Listener listener) throws Exception {
+    private static void unzipSafely(
+            File zip, File stage, long packageBytes, Listener listener) throws Exception {
         String stageCanonical = stage.getCanonicalPath();
         String rootPath = stageCanonical + File.separator;
         int entries = 0;
         long unpacked = 0;
-        long packageBytes = Math.max(ArlRemoteConfig.dataBytes(), zip.length());
         long maxUnpacked = Math.max(512L * 1024L * 1024L, packageBytes * 20L);
 
         try (ZipInputStream zis = new ZipInputStream(
@@ -229,9 +462,8 @@ public final class ArlDataManager {
                     }
                 }
                 zis.closeEntry();
-                if (entries % 20 == 0)
-                    progress(listener, Math.min(94, 86 + entries / 20),
-                            "EXTRAINDO • " + entries + " arquivos");
+                if (entries % 250 == 0)
+                    state(listener, "EXTRAINDO • " + entries + " arquivos");
             }
         }
         if (entries == 0) throw new IllegalStateException("pacote DATA vazio");
@@ -311,6 +543,11 @@ public final class ArlDataManager {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static String sanitizeId(String id) {
+        String safe = id == null ? "package" : id.replaceAll("[^A-Za-z0-9._-]", "_");
+        return safe.isEmpty() ? "package" : safe;
     }
 
     private static void deleteTree(File file) {
