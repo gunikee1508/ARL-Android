@@ -7,13 +7,9 @@ public final class ArlConfig {
     public static final int DEFAULT_PORT = 7777;
     public static final String CLIENT_VERSION = "0.3.7-R3";
 
-    /*
-     * Phase 2: the launcher configuration lives in our own repository so host,
-     * maintenance mode and DATA releases can be changed without rebuilding APK.
-     * Later the same JSON can be mirrored behind play.arl-samprpg.site if desired.
-     */
+    /* Phase 10 experimental config. Production/main stays untouched until promotion. */
     public static final String REMOTE_CONFIG =
-        "https://raw.githubusercontent.com/gunikee1508/ARL-Android/main/launcher.json";
+        "https://raw.githubusercontent.com/gunikee1508/ARL-Android/phase10-cdn-differential-updater/launcher-phase10.json";
 
     public static final String DISCORD = "https://discord.gg/7X6swkqHDt";
     public static final String INSTAGRAM =
