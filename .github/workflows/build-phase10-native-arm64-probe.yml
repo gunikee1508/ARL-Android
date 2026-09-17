@@ -1,0 +1,159 @@
+name: Phase 10 - Build Native ARM64 Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-native-arm64-runtime-test
+    paths:
+      - tools/patch_phase10_native_arm64_probe.py
+      - .github/workflows/build-phase10-native-arm64-probe.yml
+      - arl_overlay/**
+      - apply_arl_phase1.py
+      - fix_upstream_native.py
+      - tools/patch_arl_brasil_runtime.py
+      - tools/patch_phase9_premium_client.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-native-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ARL_VERSION_CODE: '111'
+      ARL_VERSION_NAME: '1.0.4-phase10-arm64-probe'
+
+    steps:
+      - name: Checkout ARL native-test branch
+        uses: actions/checkout@v5
+
+      - name: Checkout upstream without proprietary GTASA binary
+        uses: actions/checkout@v5
+        with:
+          repository: kuzia15/SAMP-Mobile
+          ref: GTA-2.10
+          path: upstream
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+            !/app/src/main/jniLibs/armeabi-v7a/libGTASA.so
+
+      - name: Assert GTASA binary was not materialized
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e upstream/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+          test ! -e upstream/app/src/main/jniLibs/armeabi-v7a/libGTASA.so
+          echo 'PASS: proprietary libGTASA.so not present in test checkout'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/**/*.gradle*
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.2.11394342" \
+            "cmake;3.22.1"
+
+      - name: Apply real Phase 10 launcher
+        run: python3 apply_arl_phase1.py upstream
+
+      - name: Wire GTA Brasil runtime source
+        run: python3 tools/patch_arl_brasil_runtime.py upstream
+
+      - name: Apply premium native runtime foundation
+        run: python3 tools/patch_phase9_premium_client.py upstream
+
+      - name: Apply upstream native build fixes
+        run: python3 fix_upstream_native.py upstream
+
+      - name: Add safe ARM64 runtime probe
+        run: python3 tools/patch_phase10_native_arm64_probe.py upstream
+
+      - name: Verify source invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "abiFilters 'arm64-v8a'" upstream/app/build.gradle
+          grep -q 'add_library(arlprobe SHARED arl_native_probe.cpp)' upstream/app/src/main/cpp/CMakeLists.txt
+          grep -q 'ArlRuntimeGuard::BootSnapshot();' upstream/app/src/main/cpp/samp/main.cpp
+          grep -q 'CStreaming::AddImageToList(kImgRelative, true)' upstream/app/src/main/cpp/samp/arl/ArlBrasilLayer.cpp
+          test ! -e upstream/app/src/main/jniLibs/arm64-v8a/libGTASA.so
+          test ! -e upstream/app/src/main/assets/arl/embedded-data.zip
+
+      - name: Build real ARM64 native APK
+        working-directory: upstream
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g
+        run: |
+          chmod +x gradlew
+          ./gradlew --stacktrace --no-daemon assembleDebug
+
+      - name: Audit native ELF and APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p arm64-native-evidence/extracted
+          APK="$(find upstream/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          cp "$APK" arm64-native-evidence/ARL-Android-1.0.4-phase10-arm64-probe.apk
+          unzip -l "$APK" > arm64-native-evidence/APK_CONTENTS.txt
+          ! grep -q 'libGTASA.so' arm64-native-evidence/APK_CONTENTS.txt
+          ! grep -q 'lib/armeabi-v7a/' arm64-native-evidence/APK_CONTENTS.txt
+          grep -q 'lib/arm64-v8a/libsamp.so' arm64-native-evidence/APK_CONTENTS.txt
+          grep -q 'lib/arm64-v8a/libarlprobe.so' arm64-native-evidence/APK_CONTENTS.txt
+
+          unzip -p "$APK" lib/arm64-v8a/libsamp.so > arm64-native-evidence/extracted/libsamp.so
+          unzip -p "$APK" lib/arm64-v8a/libarlprobe.so > arm64-native-evidence/extracted/libarlprobe.so
+
+          READELF="$ANDROID_HOME/ndk/26.2.11394342/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$READELF"
+          file arm64-native-evidence/extracted/*.so | tee arm64-native-evidence/FILE.txt
+          "$READELF" -h arm64-native-evidence/extracted/libsamp.so | tee arm64-native-evidence/LIBSAMP_ELF_HEADER.txt
+          "$READELF" -d arm64-native-evidence/extracted/libsamp.so | tee arm64-native-evidence/LIBSAMP_DYNAMIC.txt
+          "$READELF" -h arm64-native-evidence/extracted/libarlprobe.so | tee arm64-native-evidence/ARLPROBE_ELF_HEADER.txt
+
+          grep -q 'AArch64' arm64-native-evidence/LIBSAMP_ELF_HEADER.txt
+          grep -q 'AArch64' arm64-native-evidence/ARLPROBE_ELF_HEADER.txt
+          ! grep -q 'libGTASA.so' arm64-native-evidence/LIBSAMP_DYNAMIC.txt
+          strings arm64-native-evidence/extracted/libsamp.so | grep -F 'ARL Runtime' | head -20 | tee arm64-native-evidence/ARL_RUNTIME_STRINGS.txt
+          test -s arm64-native-evidence/ARL_RUNTIME_STRINGS.txt
+
+          sha256sum arm64-native-evidence/extracted/*.so arm64-native-evidence/*.apk | tee arm64-native-evidence/SHA256SUMS.txt
+          stat -c '%n %s bytes' arm64-native-evidence/extracted/*.so arm64-native-evidence/*.apk | tee arm64-native-evidence/SIZES.txt
+          printf '%s\n' \
+            'PASS: APK contains only arm64-v8a native runtime' \
+            'PASS: proprietary libGTASA.so absent' \
+            'PASS: libsamp.so is AArch64 ELF' \
+            'PASS: libarlprobe.so is AArch64 ELF' \
+            'PASS: libsamp.so has no DT_NEEDED libGTASA.so' \
+            'PASS: ARL Runtime Guard strings present in real libsamp.so' \
+            > arm64-native-evidence/RESULT.txt
+          cat arm64-native-evidence/RESULT.txt
+
+      - name: Upload ARM64 native evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARL-Phase10-Native-ARM64-Probe
+          path: arm64-native-evidence/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
