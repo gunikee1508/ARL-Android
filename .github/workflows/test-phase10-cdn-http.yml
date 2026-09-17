@@ -1,0 +1,54 @@
+name: Phase 10 - Test CDN HTTP
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - phase10-cdn-differential-updater
+    paths:
+      - .github/workflows/test-phase10-cdn-http.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE: https://github.com/gunikee1508/ARL-Android/releases/download/phase10-data-v1
+    steps:
+      - name: Fetch and validate public distribution manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --silent --show-error \
+            "$BASE/distribution.json" -o distribution.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('distribution.json',encoding='utf-8'))
+          assert d['version']=='phase10-gta-brasil-6417354'
+          assert d['fileCount']==8558
+          assert d['packageCount']==12
+          assert len(d['packages'])==12
+          assert sum(len(p['files']) for p in d['packages'])==8558
+          assert all(p['url'].startswith('https://github.com/gunikee1508/ARL-Android/releases/download/phase10-data-v1/') for p in d['packages'])
+          print('public manifest: OK', d['totalPackageBytes'])
+          PY
+
+      - name: Verify resumable Range semantics on CDN package
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="$BASE/arl10-core.zip"
+          curl --fail --location --retry 3 --silent --show-error \
+            --range 0-1048575 "$URL" -D headers-1.txt -o part-1.bin
+          test "$(stat -c %s part-1.bin)" = "1048576"
+          curl --fail --location --retry 3 --silent --show-error \
+            --range 1048576-2097151 "$URL" -D headers-2.txt -o part-2.bin
+          test "$(stat -c %s part-2.bin)" = "1048576"
+          cat part-1.bin part-2.bin > resumed-prefix.bin
+          test "$(stat -c %s resumed-prefix.bin)" = "2097152"
+          grep -Eiq '^content-range: bytes 0-1048575/' headers-1.txt
+          grep -Eiq '^content-range: bytes 1048576-2097151/' headers-2.txt
+          echo 'GitHub Release HTTP Range resume: OK'
