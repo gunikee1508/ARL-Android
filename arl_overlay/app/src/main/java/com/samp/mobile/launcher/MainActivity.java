@@ -79,7 +79,7 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.arl_discord).setOnClickListener(v -> open(ArlConfig.DISCORD));
         findViewById(R.id.arl_instagram).setOnClickListener(v -> open(ArlConfig.INSTAGRAM));
         findViewById(R.id.arl_forum).setOnClickListener(v -> open(ArlConfig.FORUM));
-        baseImportButton.setOnClickListener(v -> chooseGtaBaseSource());
+        baseImportButton.setOnClickListener(v -> handleBaseAction());
         repairButton.setOnClickListener(v -> beginRepair(false));
         appUpdateButton.setOnClickListener(v -> beginAppUpdate());
         playButton.setOnClickListener(v -> play());
@@ -133,11 +133,60 @@ public class MainActivity extends AppCompatActivity {
             int files = ArlBaseImportManager.importedFiles(this);
             baseStatus.setText("BASE GTA SA PRONTA" + (files > 0 ? " • " + files + " ARQUIVOS" : ""));
             baseStatus.setTextColor(0xFF65D889);
-        } else {
-            baseStatus.setText("BASE GTA SA AUSENTE • IMPORTE SUA CÓPIA LEGÍTIMA");
+        } else if (ArlBaseDownloadManager.isConfigured()) {
+            baseStatus.setText("BASE GTA SA AUSENTE • DOWNLOAD AUTOMÁTICO DISPONÍVEL");
             baseStatus.setTextColor(0xFFF0C95C);
+            baseImportButton.setText("BAIXAR E PREPARAR GTA SA");
+        } else {
+            baseStatus.setText("BASE GTA SA AUSENTE • FONTE AUTOMÁTICA NÃO CONFIGURADA");
+            baseStatus.setTextColor(0xFFF0C95C);
+            baseImportButton.setText("IMPORTAR BASE GTA SA");
         }
         updatePlayEnabled();
+    }
+
+    private void handleBaseAction() {
+        if (baseBusy) return;
+        if (ArlBaseDownloadManager.isConfigured()) beginBaseDownload(false);
+        else chooseGtaBaseSource();
+    }
+
+    private void beginBaseDownload(boolean force) {
+        if (baseBusy || !ArlBaseDownloadManager.isConfigured()) return;
+        baseBusy = true;
+        baseStatus.setTextColor(0xFFD8BB57);
+        baseStatus.setText("PREPARANDO DOWNLOAD DA BASE GTA SA...");
+        baseProgress.setVisibility(View.VISIBLE);
+        baseProgress.setIndeterminate(false);
+        baseProgress.setProgress(0);
+        baseImportButton.setEnabled(false);
+        updatePlayEnabled();
+
+        ArlBaseDownloadManager.installOrRepair(this, force,
+                new ArlBaseDownloadManager.Listener() {
+                    @Override public void onState(String text) {
+                        baseStatus.setText(text);
+                    }
+
+                    @Override public void onProgress(int percent, String text) {
+                        baseProgress.setProgress(percent);
+                        baseStatus.setText(text + " • " + percent + "%");
+                    }
+
+                    @Override public void onComplete(boolean success, String message) {
+                        baseBusy = false;
+                        baseProgress.setVisibility(View.GONE);
+                        Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                        refreshBaseState();
+                        refreshDataState();
+                        updatePlayEnabled();
+                        if (success && ArlBaseImportManager.isBaseReady(MainActivity.this)
+                                && ArlDataManager.isConfigured()
+                                && ArlDataManager.requiresRepair(MainActivity.this)) {
+                            beginRepair(false);
+                        }
+                    }
+                });
     }
 
     private void chooseGtaBaseSource() {
@@ -350,8 +399,13 @@ public class MainActivity extends AppCompatActivity {
     private void beginRepair(boolean force) {
         if (dataBusy || baseBusy) return;
         if (!ArlBaseImportManager.isBaseReady(this)) {
-            Toast.makeText(this, "Importe primeiro a base legítima do GTA SA.", Toast.LENGTH_LONG).show();
-            chooseGtaBaseSource();
+            if (ArlBaseDownloadManager.isConfigured()) {
+                Toast.makeText(this, "Preparando automaticamente a base GTA SA.", Toast.LENGTH_LONG).show();
+                beginBaseDownload(false);
+            } else {
+                Toast.makeText(this, "Importe primeiro uma base legítima do GTA SA.", Toast.LENGTH_LONG).show();
+                chooseGtaBaseSource();
+            }
             return;
         }
         if (ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
@@ -436,8 +490,13 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         if (!ArlBaseImportManager.isBaseReady(this)) {
-            Toast.makeText(this, "Importe a base legítima do GTA SA antes de jogar.", Toast.LENGTH_LONG).show();
-            chooseGtaBaseSource();
+            if (ArlBaseDownloadManager.isConfigured()) {
+                Toast.makeText(this, "A base GTA SA será preparada automaticamente.", Toast.LENGTH_LONG).show();
+                beginBaseDownload(false);
+            } else {
+                Toast.makeText(this, "Uma base legítima do GTA SA é necessária antes de jogar.", Toast.LENGTH_LONG).show();
+                chooseGtaBaseSource();
+            }
             return;
         }
         if (ArlRemoteConfig.hasDataRelease() && !ArlRemoteConfig.dataManifestReady()) {
