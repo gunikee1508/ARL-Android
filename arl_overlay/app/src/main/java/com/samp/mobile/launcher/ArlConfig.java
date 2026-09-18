@@ -15,4 +15,9 @@ public final class ArlConfig {
     public static final String INSTAGRAM =
         "https://www.instagram.com/amazingreallifesamp";
     public static final String FORUM = "https://arl-samprpg.forumeiros.com";
+
+    // Official Android GTA SA package/store fallback used when no base is present.
+    public static final String GTA_PACKAGE = "com.rockstargames.gtasa";
+    public static final String GTA_PLAY_STORE =
+        "https://play.google.com/store/apps/details?id=" + GTA_PACKAGE;
 }
