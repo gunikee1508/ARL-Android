@@ -65,8 +65,13 @@ public class SplashActivity extends AppCompatActivity {
 
     private void bootstrap() {
         if (finished || isFinishing() || isDestroyed()) return;
-        setSplashStatus("VERIFICANDO BASE GTA SA...",
-                "Procurando automaticamente sua instalação legítima");
+        setSplashStatus("CONSULTANDO DISTRIBUIÇÃO ARL...",
+                "Verificando base, cliente e atualizações disponíveis");
+        ArlRemoteConfig.refresh(this, this::bootstrapWithRemote);
+    }
+
+    private void bootstrapWithRemote() {
+        if (finished || isFinishing() || isDestroyed()) return;
 
         if (ArlBaseImportManager.isBaseReady(this)) {
             setSplashStatus("BASE GTA SA PRONTA",
@@ -75,6 +80,44 @@ public class SplashActivity extends AppCompatActivity {
             return;
         }
 
+        if (ArlBaseDownloadManager.isConfigured()) {
+            setSplashStatus("PREPARANDO BASE GTA SA...",
+                    "Download automático autorizado disponível");
+            ArlBaseDownloadManager.installOrRepair(this, false,
+                    new ArlBaseDownloadManager.Listener() {
+                        @Override public void onState(String text) {
+                            setSplashStatus("PREPARANDO BASE GTA SA", text);
+                        }
+
+                        @Override public void onProgress(int percent, String text) {
+                            setSplashStatus("BAIXANDO BASE • " + percent + "%", text);
+                        }
+
+                        @Override public void onComplete(boolean success, String message) {
+                            if (finished || isFinishing() || isDestroyed()) return;
+                            if (success && ArlBaseImportManager.isBaseReady(SplashActivity.this)) {
+                                setSplashStatus("BASE GTA SA PRONTA",
+                                        "Aplicando a experiência Amazing Real Life");
+                                prepareManagedData();
+                            } else {
+                                fallbackBaseDiscovery(message);
+                            }
+                        }
+                    });
+            return;
+        }
+
+        fallbackBaseDiscovery(null);
+    }
+
+    private void fallbackBaseDiscovery(String reason) {
+        if (finished || isFinishing() || isDestroyed()) return;
+        if (reason != null && !reason.trim().isEmpty()) {
+            Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+        }
+
+        setSplashStatus("VERIFICANDO BASE GTA SA...",
+                "Procurando automaticamente uma instalação legítima existente");
         ArlAutoBaseDiscovery.tryImport(this, quietBaseListener(), (imported, message) -> {
             if (finished || isFinishing() || isDestroyed()) return;
             if (imported || ArlBaseImportManager.isBaseReady(this)) {
@@ -83,7 +126,7 @@ public class SplashActivity extends AppCompatActivity {
                 prepareManagedData();
             } else {
                 setSplashStatus("ACESSO À BASE NECESSÁRIO",
-                        "O Android pode pedir uma confirmação única de pasta");
+                        "Nenhuma distribuição autorizada automática foi configurada");
                 tryPersistedTreesOrRequestAccess();
             }
         });
@@ -198,28 +241,26 @@ public class SplashActivity extends AppCompatActivity {
         if (finished || isFinishing() || isDestroyed()) return;
         setSplashStatus("VERIFICANDO ARQUIVOS ARL...",
                 "Conferindo integridade e atualizações do cliente");
-        ArlRemoteConfig.refresh(this, () -> {
-            if (finished || isFinishing() || isDestroyed()) return;
-            if (!ArlDataManager.isConfigured()) {
-                openLauncher();
-                return;
-            }
 
-            ArlDataManager.verifyOrRepair(this, false, new ArlDataManager.Listener() {
-                @Override public void onState(String text) {
-                    setSplashStatus("PREPARANDO AMAZING REAL LIFE", text);
-                }
-                @Override public void onProgress(int percent, String text) {
-                    setSplashStatus("PREPARANDO ARL • " + percent + "%", text);
-                }
-                @Override public void onComplete(boolean success, String message) {
-                    if (!success)
-                        Toast.makeText(SplashActivity.this, message, Toast.LENGTH_LONG).show();
-                    setSplashStatus("CLIENTE ARL PRONTO",
-                            "Abrindo o acesso ao servidor");
-                    openLauncher();
-                }
-            });
+        if (!ArlDataManager.isConfigured()) {
+            openLauncher();
+            return;
+        }
+
+        ArlDataManager.verifyOrRepair(this, false, new ArlDataManager.Listener() {
+            @Override public void onState(String text) {
+                setSplashStatus("PREPARANDO AMAZING REAL LIFE", text);
+            }
+            @Override public void onProgress(int percent, String text) {
+                setSplashStatus("PREPARANDO ARL • " + percent + "%", text);
+            }
+            @Override public void onComplete(boolean success, String message) {
+                if (!success)
+                    Toast.makeText(SplashActivity.this, message, Toast.LENGTH_LONG).show();
+                setSplashStatus("CLIENTE ARL PRONTO",
+                        "Abrindo o acesso ao servidor");
+                openLauncher();
+            }
         });
     }
 
