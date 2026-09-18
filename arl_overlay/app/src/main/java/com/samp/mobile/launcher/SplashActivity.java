@@ -36,6 +36,7 @@ public class SplashActivity extends AppCompatActivity {
     private long createdAt;
     private boolean finished;
     private boolean pickerLaunched;
+    private boolean waitingForOfficialGta;
     private List<Uri> persistedTrees = new ArrayList<>();
     private TextView splashStatus;
     private TextView splashDetail;
@@ -125,11 +126,59 @@ public class SplashActivity extends AppCompatActivity {
                         "Validando a experiência Amazing Real Life");
                 prepareManagedData();
             } else {
-                setSplashStatus("ACESSO À BASE NECESSÁRIO",
-                        "Nenhuma distribuição autorizada automática foi configurada");
-                tryPersistedTreesOrRequestAccess();
+                setSplashStatus("GTA SAN ANDREAS NECESSÁRIO",
+                        "Abrindo a instalação oficial para continuar");
+                openOfficialGtaOrRequestAccess();
             }
         });
+    }
+
+    private void openOfficialGtaOrRequestAccess() {
+        if (finished || isFinishing() || isDestroyed()) return;
+
+        if (isOfficialGtaInstalled()) {
+            setSplashStatus("GTA SA INSTALADO",
+                    "Tentando acessar os arquivos do jogo");
+            tryPersistedTreesOrRequestAccess();
+            return;
+        }
+
+        try {
+            waitingForOfficialGta = true;
+            Intent market = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("market://details?id=" + ArlConfig.GTA_PACKAGE));
+            market.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(market);
+        } catch (Exception first) {
+            try {
+                waitingForOfficialGta = true;
+                startActivity(new Intent(Intent.ACTION_VIEW,
+                        Uri.parse(ArlConfig.GTA_PLAY_STORE)));
+            } catch (Exception ignored) {
+                waitingForOfficialGta = false;
+                tryPersistedTreesOrRequestAccess();
+            }
+        }
+    }
+
+    private boolean isOfficialGtaInstalled() {
+        try {
+            getPackageManager().getPackageInfo(ArlConfig.GTA_PACKAGE, 0);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (!waitingForOfficialGta || finished) return;
+        if (!isOfficialGtaInstalled()) return;
+
+        waitingForOfficialGta = false;
+        setSplashStatus("GTA SA ENCONTRADO",
+                "Importando automaticamente os arquivos necessários");
+        handler.postDelayed(this::bootstrapWithRemote, 450L);
     }
 
     private void tryPersistedTreesOrRequestAccess() {
