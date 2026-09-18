@@ -19,7 +19,8 @@
       "version": "",
       "provider": "authorized-cdn",
       "distributionAuthorized": false,
-      "manifestUrl": ""
+      "manifestUrl": "",
+      "legacyConfigUrl": ""
     },
     "data": {
       "version": "phase10-gta-brasil-6417354",
