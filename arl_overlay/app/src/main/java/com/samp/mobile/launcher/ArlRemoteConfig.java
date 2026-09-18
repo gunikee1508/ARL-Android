@@ -81,6 +81,18 @@ public final class ArlRemoteConfig {
     private static volatile List<DataFile> dataFiles = Collections.emptyList();
     private static volatile List<DataPackage> dataPackages = Collections.emptyList();
 
+    // Phase 11: optional, explicitly-authorized GTA base distribution.
+    // The launcher refuses to consume a remote base unless BOTH launcher config
+    // and the base manifest declare distributionAuthorized=true.
+    private static volatile String baseVersion = "";
+    private static volatile String baseManifestUrl = "";
+    private static volatile String baseProvider = "";
+    private static volatile boolean baseDistributionAuthorized = false;
+    private static volatile boolean baseReleaseDeclared = false;
+    private static volatile boolean baseManifestReady = false;
+    private static volatile List<DataFile> baseFiles = Collections.emptyList();
+    private static volatile List<DataPackage> basePackages = Collections.emptyList();
+
     private ArlRemoteConfig() {}
 
     public static String host(){ return host; }
@@ -107,17 +119,35 @@ public final class ArlRemoteConfig {
     public static List<DataPackage> dataPackages(){ return dataPackages; }
     public static boolean packageMode(){ return !dataPackages.isEmpty(); }
 
+    public static String baseVersion(){ return baseVersion; }
+    public static String baseManifestUrl(){ return baseManifestUrl; }
+    public static String baseProvider(){ return baseProvider; }
+    public static boolean baseDistributionAuthorized(){ return baseDistributionAuthorized; }
+    public static boolean hasBaseRelease(){ return baseReleaseDeclared; }
+    public static boolean baseManifestReady(){ return baseManifestReady; }
+    public static List<DataFile> baseFiles(){ return baseFiles; }
+    public static List<DataPackage> basePackages(){ return basePackages; }
+
     public static void refresh(Context context, Callback cb) {
         final Context app = context.getApplicationContext();
         dataManifestReady = false;
         dataFiles = Collections.emptyList();
         dataPackages = Collections.emptyList();
+        baseManifestReady = false;
+        baseFiles = Collections.emptyList();
+        basePackages = Collections.emptyList();
+        baseReleaseDeclared = false;
+        baseDistributionAuthorized = false;
+        baseVersion = "";
+        baseManifestUrl = "";
+        baseProvider = "";
         appReleaseDeclared = false;
 
         StringRequest req = new StringRequest(ArlConfig.REMOTE_CONFIG,
             new Response.Listener<String>() {
                 @Override public void onResponse(String response) {
                     boolean fetchExternalManifest = false;
+                    boolean fetchExternalBaseManifest = false;
                     try {
                         JSONObject root = new JSONObject(response);
                         maintenance = root.optBoolean("maintenance", false);
@@ -146,6 +176,31 @@ public final class ArlRemoteConfig {
 
                         JSONObject client = root.optJSONObject("client");
                         if(client != null) {
+                            JSONObject base = client.optJSONObject("base");
+                            if(base != null) {
+                                baseVersion = base.optString("version", "").trim();
+                                baseManifestUrl = base.optString("manifestUrl",
+                                        base.optString("manifest", "")).trim();
+                                baseProvider = base.optString("provider", "").trim();
+                                baseDistributionAuthorized =
+                                        base.optBoolean("distributionAuthorized", false);
+
+                                List<DataPackage> inlineBasePackages = parsePackages(base);
+                                if(baseDistributionAuthorized && !inlineBasePackages.isEmpty()) {
+                                    setBasePackages(inlineBasePackages);
+                                    baseManifestReady = true;
+                                } else if(baseDistributionAuthorized
+                                        && validHttp(baseManifestUrl)
+                                        && !baseVersion.isEmpty()) {
+                                    fetchExternalBaseManifest = true;
+                                }
+
+                                baseReleaseDeclared = baseDistributionAuthorized
+                                        && !baseVersion.isEmpty()
+                                        && (validHttp(baseManifestUrl)
+                                            || !inlineBasePackages.isEmpty());
+                            }
+
                             JSONObject data = client.optJSONObject("data");
                             JSONObject src = data != null ? data : client;
 
@@ -188,8 +243,17 @@ public final class ArlRemoteConfig {
                         appReleaseDeclared = false;
                     }
 
-                    if(fetchExternalManifest) fetchManifest(app, cb);
-                    else cb.onReady();
+                    if(fetchExternalBaseManifest) {
+                        final boolean fetchDataAfterBase = fetchExternalManifest;
+                        fetchBaseManifest(app, () -> {
+                            if(fetchDataAfterBase) fetchManifest(app, cb);
+                            else cb.onReady();
+                        });
+                    } else if(fetchExternalManifest) {
+                        fetchManifest(app, cb);
+                    } else {
+                        cb.onReady();
+                    }
                 }
             },
             new Response.ErrorListener() {
@@ -239,6 +303,54 @@ public final class ArlRemoteConfig {
                 }
             });
         Volley.newRequestQueue(context.getApplicationContext()).add(req);
+    }
+
+    private static void fetchBaseManifest(Context context, Callback cb) {
+        StringRequest req = new StringRequest(baseManifestUrl,
+            new Response.Listener<String>() {
+                @Override public void onResponse(String response) {
+                    try {
+                        JSONObject root = new JSONObject(response);
+                        if(!root.optBoolean("distributionAuthorized", false))
+                            throw new SecurityException("base manifest is not authorized");
+                        String manifestVersion = root.optString("version", "").trim();
+                        if(!manifestVersion.isEmpty() && !manifestVersion.equals(baseVersion))
+                            throw new IllegalStateException("base manifest version mismatch");
+
+                        List<DataPackage> packages = parsePackages(root);
+                        if(packages.isEmpty())
+                            throw new IllegalStateException("empty base manifest");
+                        setBasePackages(packages);
+                        baseManifestReady = true;
+                    } catch(Exception ignored) {
+                        baseFiles = Collections.emptyList();
+                        basePackages = Collections.emptyList();
+                        baseManifestReady = false;
+                    }
+                    cb.onReady();
+                }
+            },
+            new Response.ErrorListener() {
+                @Override public void onErrorResponse(VolleyError error) {
+                    baseFiles = Collections.emptyList();
+                    basePackages = Collections.emptyList();
+                    baseManifestReady = false;
+                    cb.onReady();
+                }
+            });
+        Volley.newRequestQueue(context.getApplicationContext()).add(req);
+    }
+
+    private static void setBasePackages(List<DataPackage> packages) {
+        ArrayList<DataPackage> valid = new ArrayList<>();
+        ArrayList<DataFile> all = new ArrayList<>();
+        for(DataPackage pkg : packages) {
+            if(pkg == null || !pkg.valid()) continue;
+            valid.add(pkg);
+            all.addAll(pkg.files);
+        }
+        basePackages = Collections.unmodifiableList(valid);
+        baseFiles = Collections.unmodifiableList(all);
     }
 
     private static void setPackages(List<DataPackage> packages) {
