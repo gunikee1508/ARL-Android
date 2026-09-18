@@ -125,6 +125,16 @@ def main():
     replacement=opening+launch+sm.group(3)
     x=x[:sm.start()]+replacement+x[sm.end():]
 
+    # Android 11+ package visibility: allow detecting the official GTA SA app.
+    if '<queries>' not in x:
+        x=x.replace(
+            '    <application\n',
+            '    <queries>\n'
+            '        <package android:name="com.rockstargames.gtasa" />\n'
+            '    </queries>\n\n'
+            '    <application\n',
+            1)
+
     if 'android:name=".launcher.MainActivity"' not in x:
         die("MainActivity não encontrada")
 
