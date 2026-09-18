@@ -87,6 +87,7 @@ public final class ArlRemoteConfig {
     private static volatile String baseVersion = "";
     private static volatile String baseManifestUrl = "";
     private static volatile String baseProvider = "";
+    private static volatile String baseLegacyConfigUrl = "";
     private static volatile boolean baseDistributionAuthorized = false;
     private static volatile boolean baseReleaseDeclared = false;
     private static volatile boolean baseManifestReady = false;
@@ -122,6 +123,7 @@ public final class ArlRemoteConfig {
     public static String baseVersion(){ return baseVersion; }
     public static String baseManifestUrl(){ return baseManifestUrl; }
     public static String baseProvider(){ return baseProvider; }
+    public static String baseLegacyConfigUrl(){ return baseLegacyConfigUrl; }
     public static boolean baseDistributionAuthorized(){ return baseDistributionAuthorized; }
     public static boolean hasBaseRelease(){ return baseReleaseDeclared; }
     public static boolean baseManifestReady(){ return baseManifestReady; }
@@ -141,6 +143,7 @@ public final class ArlRemoteConfig {
         baseVersion = "";
         baseManifestUrl = "";
         baseProvider = "";
+        baseLegacyConfigUrl = "";
         appReleaseDeclared = false;
 
         StringRequest req = new StringRequest(ArlConfig.REMOTE_CONFIG,
@@ -182,6 +185,7 @@ public final class ArlRemoteConfig {
                                 baseManifestUrl = base.optString("manifestUrl",
                                         base.optString("manifest", "")).trim();
                                 baseProvider = base.optString("provider", "").trim();
+                                baseLegacyConfigUrl = base.optString("legacyConfigUrl", "").trim();
                                 baseDistributionAuthorized =
                                         base.optBoolean("distributionAuthorized", false);
 
@@ -196,9 +200,10 @@ public final class ArlRemoteConfig {
                                 }
 
                                 baseReleaseDeclared = baseDistributionAuthorized
-                                        && !baseVersion.isEmpty()
-                                        && (validHttp(baseManifestUrl)
-                                            || !inlineBasePackages.isEmpty());
+                                        && (( !baseVersion.isEmpty()
+                                            && (validHttp(baseManifestUrl)
+                                                || !inlineBasePackages.isEmpty()))
+                                            || validHttp(baseLegacyConfigUrl));
                             }
 
                             JSONObject data = client.optJSONObject("data");
