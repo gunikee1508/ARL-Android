@@ -48,6 +48,9 @@ public final class ArlBaseDownloadManager {
     public static boolean isConfigured() {
         if (!ArlRemoteConfig.baseDistributionAuthorized()) return false;
         if (!ArlRemoteConfig.hasBaseRelease()) return false;
+
+        if (ArlLegacyBaseDownloader.isConfigured()) return true;
+
         if (!ArlRemoteConfig.baseManifestReady()) return false;
         if (safe(ArlRemoteConfig.baseVersion()).isEmpty()) return false;
         List<ArlRemoteConfig.DataPackage> packages = ArlRemoteConfig.basePackages();
@@ -68,6 +71,8 @@ public final class ArlBaseDownloadManager {
 
     public static boolean requiresRepair(Context context) {
         if (!isConfigured()) return false;
+        if (ArlLegacyBaseDownloader.isConfigured())
+            return !ArlGtaBaseValidator.isValid(context);
         File root = context.getExternalFilesDir(null);
         if (root == null) return true;
         if (!ArlGtaBaseValidator.isValid(root)) return true;
@@ -80,6 +85,11 @@ public final class ArlBaseDownloadManager {
     }
 
     public static void installOrRepair(Context context, boolean force, Listener listener) {
+        if (ArlLegacyBaseDownloader.isConfigured()) {
+            ArlLegacyBaseDownloader.installOrRepair(context, force, listener);
+            return;
+        }
+
         final Context app = context.getApplicationContext();
         new Thread(() -> {
             try {
