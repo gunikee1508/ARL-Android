@@ -60,7 +60,7 @@ public final class ArlBaseImportManager {
     public static boolean isBaseReady(Context context) {
         File root = context.getExternalFilesDir(null);
         if (root == null) return false;
-        boolean structure = looksLikeInstalledBase(root);
+        boolean structure = ArlGtaBaseValidator.isValid(root);
         if (structure && !prefs(context).getBoolean(KEY_READY, false)) {
             prefs(context).edit().putBoolean(KEY_READY, true).apply();
         }
