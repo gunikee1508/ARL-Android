@@ -26,18 +26,28 @@ public final class ArlGtaBaseValidator {
         boolean gta3 = anyFile(root,
                 "texdb/gta3/gta3.etc",
                 "texdb/gta3/gta3.pvr",
-                "texdb/gta3/gta3.dxt");
+                "texdb/gta3/gta3.dxt",
+                "texdb/gta3/gta3.etc.dat",
+                "texdb/gta3/gta3.pvr.dat",
+                "texdb/gta3/gta3.dxt.dat");
 
         boolean interiors = anyFile(root,
                 "texdb/gta_int/gta_int.etc",
                 "texdb/gta_int/gta_int.pvr",
-                "texdb/gta_int/gta_int.dxt");
+                "texdb/gta_int/gta_int.dxt",
+                "texdb/gta_int/gta_int.etc.dat",
+                "texdb/gta_int/gta_int.pvr.dat",
+                "texdb/gta_int/gta_int.dxt.dat");
 
         boolean audio = anyFile(root,
                 "audio/SFX/FEET",
                 "audio/SFX/GENRL",
+                "audio/SFX/FEET.osw",
+                "audio/SFX/GENRL.osw",
                 "audio/STREAMS/AA",
-                "audio/STREAMS/CH");
+                "audio/STREAMS/CH",
+                "audio/STREAMS/AA.osw",
+                "audio/STREAMS/CH.osw");
 
         boolean gameData = anyFile(root,
                 "data/handling.cfg",
