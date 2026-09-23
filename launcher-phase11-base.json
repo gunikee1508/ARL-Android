@@ -16,10 +16,10 @@
   "client": {
     "version": "0.3.7-R3",
     "base": {
-      "version": "",
+      "version": "gta-sa-cache-20260923",
       "provider": "github-releases",
-      "distributionAuthorized": false,
-      "manifestUrl": "",
+      "distributionAuthorized": true,
+      "manifestUrl": "https://github.com/gunikee1508/ARL-Android/releases/download/arl-gta-base-20260923-v1/base-distribution.json",
       "legacyConfigUrl": ""
     },
     "data": {
