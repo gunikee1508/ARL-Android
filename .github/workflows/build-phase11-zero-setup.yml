@@ -8,6 +8,7 @@ on:
     paths:
       - arl_overlay/**
       - launcher-phase11.json
+      - launcher-phase11-base.json
       - tools/patch_arl_brasil_runtime.py
       - tools/patch_phase9_premium_client.py
       - apply_arl_phase1.py
@@ -83,7 +84,7 @@ jobs:
           grep -q 'Range' "$JAVA/ArlBaseDownloadManager.java"
           grep -q 'SHA-256' "$JAVA/ArlBaseDownloadManager.java"
           grep -q 'ArlGtaBaseValidator.isValid(root)' "$JAVA/ArlBaseImportManager.java"
-          grep -q 'phase11-zero-setup-base/launcher-phase11.json' "$JAVA/ArlConfig.java"
+          grep -q 'phase11-zero-setup-base/launcher-phase11-base.json' "$JAVA/ArlConfig.java"
           grep -q '"distributionAuthorized": false' launcher-phase11.json
           grep -q 'ENTRAR NO AMAZING REAL LIFE' upstream/app/src/main/res/layout/activity_main.xml
           grep -q 'ArlRuntimeGuard::BootSnapshot();' upstream/app/src/main/cpp/samp/main.cpp
