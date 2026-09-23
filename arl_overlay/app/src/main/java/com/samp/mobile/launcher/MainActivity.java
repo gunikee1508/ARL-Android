@@ -44,7 +44,7 @@ public class MainActivity extends AppCompatActivity {
     private ProgressBar baseProgress, dataProgress, appUpdateProgress;
     private boolean baseBusy = false;
     private boolean dataBusy = false;
-    private boolean appBusy = false;
+    private boolean appBusy = false; private boolean gameBusy = false;
     private boolean remoteReady = false;
     private boolean dataIntegrityKnown = false;
     private boolean dataRepairNeeded = true;
@@ -494,7 +494,7 @@ public class MainActivity extends AppCompatActivity {
                 && !ArlRemoteConfig.maintenance()
                 && !baseBusy
                 && !dataBusy
-                && !appBusy
+                && !appBusy && !gameBusy
                 && !dataBlocksPlay()
                 && !ArlAppUpdateManager.updateRequired(this);
         playButton.setEnabled(enabled);
@@ -503,7 +503,7 @@ public class MainActivity extends AppCompatActivity {
     /* ---------- Start game ---------- */
 
     private void play() {
-        if (baseBusy || dataBusy || appBusy) {
+        if (baseBusy || dataBusy || appBusy || gameBusy) {
             Toast.makeText(this, "Aguarde a operação em andamento.", Toast.LENGTH_LONG).show();
             return;
         }
@@ -554,7 +554,7 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Falha ao salvar settings.ini.", Toast.LENGTH_LONG).show();
             return;
         }
-        startActivity(new Intent(this, SAMP.class));
+        startPreparedGame();
     }
 
     private void refreshStatus() {
@@ -622,4 +622,32 @@ public class MainActivity extends AppCompatActivity {
         executor.shutdownNow();
         super.onDestroy();
     }
+    private void startPreparedGame() {
+        gameBusy = true;
+        status.setText("PREPARANDO ARQUIVOS DO JOGO...");
+        updatePlayEnabled();
+        executor.execute(() -> {
+            try {
+                ArlGameTextInstaller.prepare(getApplicationContext());
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    gameBusy = false;
+                    status.setText("ABRINDO O JOGO...");
+                    updatePlayEnabled();
+                    startActivity(new Intent(MainActivity.this, SAMP.class));
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    gameBusy = false;
+                    status.setText("FALHA AO PREPARAR ARQUIVOS DO JOGO");
+                    updatePlayEnabled();
+                    Toast.makeText(MainActivity.this,
+                            "Não foi possível preparar o jogo: " + error.getMessage(),
+                            Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+    }
+
 }
