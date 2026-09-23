@@ -36,61 +36,67 @@ def main() -> None:
         if not required.exists():
             raise SystemExit(f"[ARL NATIVE FIX] arquivo não encontrado: {required}")
 
-    # Linux/Android CI é case-sensitive. O upstream inclui playerTabList.h,
-    # porém o arquivo real versionado é playertablist.h.
-    replace_required(
-        gui_h,
+    replace_required(gui_h,
         '#include "samp_widgets/playerTabList.h"',
-        '#include "samp_widgets/playertablist.h"'
-    )
-
-    # Mesmo problema em game/rgba.cpp: o arquivo real é rgba.h (minúsculo).
-    replace_required(
-        rgba_cpp,
+        '#include "samp_widgets/playertablist.h"')
+    replace_required(rgba_cpp,
         '#include "RGBA.h"',
-        '#include "rgba.h"'
-    )
-
-    # A pasta real do RakNet nesta branch é vendor/raknet (minúsculo),
-    # enquanto voice_new/Network.h usa vendor/RakNet.
-    replace_required(
-        network_h,
+        '#include "rgba.h"')
+    replace_required(network_h,
         '#include "../vendor/RakNet/BitStream.h"',
-        '#include "../vendor/raknet/BitStream.h"'
-    )
-    replace_required(
-        network_h,
+        '#include "../vendor/raknet/BitStream.h"')
+    replace_required(network_h,
         '#include "../vendor/RakNet/RakClient.h"',
-        '#include "../vendor/raknet/RakClient.h"'
-    )
+        '#include "../vendor/raknet/RakClient.h"')
 
-    # The original NvFOpen can read files packaged in APK assets. Upstream's
-    # redirect discarded that fallback entirely, so a fresh installation
-    # crashes in OS_FileRead when opening Text/AMERICAN.GXT (the file exists in
-    # assets, but not in the downloaded external GTA cache).
-    replace_required(
-        hooks_cpp,
+    # The original NvFOpen fallback crashes because the game's native
+    # AssetManager is null. Read external data, including case-only aliases.
+    replace_required(hooks_cpp,
+        '#include <EGL/egl.h>',
+        '#include <EGL/egl.h>\n#include <dirent.h>\n#include <strings.h>\n#include <limits.h>')
+    replace_required(hooks_cpp,
         'stFile* NvFOpen(const char* r0, const char* r1, int r2, int r3)',
-        'stFile* (*NvFOpen_original)(const char*, const char*, int, int) = nullptr;\n\n'
-        'stFile* NvFOpen(const char* r0, const char* r1, int r2, int r3)'
-    )
-    replace_required(
-        hooks_cpp,
-        '        FLog("NVFOpen hook | Error: file not found (%s)", path);\n'
-        '        free(st);\n'
-        '        return nullptr;',
-        '        free(st);\n'
-        '        if (NvFOpen_original) return NvFOpen_original(r0, r1, r2, r3);\n'
-        '        FLog("NVFOpen hook | Error: file not found (%s)", path);\n'
-        '        return nullptr;'
-    )
-    replace_required(
-        hooks_cpp,
-        '    CHook::Redirect("_Z7NvFOpenPKcS0_bb", &NvFOpen);',
-        '    CHook::InlineHook("_Z7NvFOpenPKcS0_bb", &NvFOpen, &NvFOpen_original);'
-    )
+        '''static FILE* ArlOpenCaseInsensitive(const char* absolute)
+{
+    if (!absolute || absolute[0] != '/') return nullptr;
+    char current[PATH_MAX] = "/";
+    const char* part = absolute + 1;
+    while (*part) {
+        if (*part == '/') { ++part; continue; }
+        const char* slash = strchr(part, '/');
+        size_t len = slash ? (size_t)(slash - part) : strlen(part);
+        if (!len || len >= NAME_MAX ||
+            (len == 1 && part[0] == '.') ||
+            (len == 2 && part[0] == '.' && part[1] == '.'))
+            return nullptr;
+        DIR* dir = opendir(current);
+        if (!dir) return nullptr;
+        char name[NAME_MAX + 1] = {};
+        struct dirent* entry;
+        while ((entry = readdir(dir))) {
+            if (strlen(entry->d_name) == len && !strncasecmp(entry->d_name, part, len)) {
+                snprintf(name, sizeof(name), "%s", entry->d_name);
+                break;
+            }
+        }
+        closedir(dir);
+        if (!name[0]) return nullptr;
+        size_t used = strlen(current);
+        if (used + strlen(name) + 2 >= sizeof(current)) return nullptr;
+        if (used > 1) strcat(current, "/");
+        strcat(current, name);
+        part = slash ? slash + 1 : part + len;
+    }
+    return fopen(current, "rb");
+}
 
-    print("[ARL NATIVE FIX] auditoria v4 concluída")
+stFile* NvFOpen(const char* r0, const char* r1, int r2, int r3)''')
+    replace_required(hooks_cpp,
+        '    FILE *f  = fopen(path, "rb");',
+        '    FILE *f  = fopen(path, "rb");\n'
+        '    if (!f) f = ArlOpenCaseInsensitive(path);')
+
+    print("[ARL NATIVE FIX] auditoria v5 concluída")
 
 
 if __name__ == "__main__":
