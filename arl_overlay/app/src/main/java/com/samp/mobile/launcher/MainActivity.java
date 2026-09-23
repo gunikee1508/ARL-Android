@@ -46,6 +46,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean dataBusy = false;
     private boolean appBusy = false;
     private boolean remoteReady = false;
+    private boolean dataIntegrityKnown = false;
+    private boolean dataRepairNeeded = true;
+    private int dataIntegrityGeneration = 0;
     private boolean waitingInstallPermission = false;
     private File downloadedUpdateApk;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -178,13 +181,13 @@ public class MainActivity extends AppCompatActivity {
                         baseProgress.setVisibility(View.GONE);
                         Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                         refreshBaseState();
-                        refreshDataState();
-                        updatePlayEnabled();
                         if (success && ArlBaseImportManager.isBaseReady(MainActivity.this)
-                                && ArlDataManager.isConfigured()
-                                && ArlDataManager.requiresRepair(MainActivity.this)) {
+                                && ArlDataManager.isConfigured()) {
                             beginRepair(false);
+                        } else {
+                            refreshDataState();
                         }
+                        updatePlayEnabled();
                     }
                 });
     }
@@ -268,11 +271,12 @@ public class MainActivity extends AppCompatActivity {
                 baseProgress.setVisibility(View.GONE);
                 Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                 refreshBaseState();
-                refreshDataState();
-                updatePlayEnabled();
-                if (success && ArlDataManager.isConfigured() && ArlDataManager.requiresRepair(MainActivity.this)) {
+                if (success && ArlDataManager.isConfigured()) {
                     beginRepair(false);
+                } else {
+                    refreshDataState();
                 }
+                updatePlayEnabled();
             }
         };
 
@@ -360,6 +364,12 @@ public class MainActivity extends AppCompatActivity {
     private void refreshDataState() {
         if (dataBusy) return;
 
+        // Hashing the complete ARL DATA can take seconds. Never run it on the
+        // main thread: Android otherwise reports an ANR after extraction.
+        dataIntegrityKnown = false;
+        dataRepairNeeded = true;
+        final int generation = ++dataIntegrityGeneration;
+
         if (!ArlBaseImportManager.isBaseReady(this)) {
             dataStatus.setText("OVERLAY ARL AGUARDANDO BASE GTA SA");
             repairButton.setEnabled(false);
@@ -385,15 +395,29 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        repairButton.setEnabled(true);
-        if (ArlDataManager.requiresRepair(this)) {
-            String version = ArlRemoteConfig.dataVersion();
-            dataStatus.setText("ATUALIZAÇÃO ARL NECESSÁRIA" + (version.isEmpty() ? "" : " • " + version));
-        } else {
-            String installed = ArlDataManager.installedVersion(this);
-            dataStatus.setText("ARQUIVOS ARL VERIFICADOS" + (installed.isEmpty() ? "" : " • " + installed));
-        }
+        repairButton.setEnabled(false);
+        dataStatus.setText("VERIFICANDO ARQUIVOS ARL...");
         updatePlayEnabled();
+        executor.execute(() -> {
+            final boolean needsRepair = ArlDataManager.requiresRepair(getApplicationContext());
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed() || dataBusy
+                        || generation != dataIntegrityGeneration) return;
+                dataIntegrityKnown = true;
+                dataRepairNeeded = needsRepair;
+                repairButton.setEnabled(true);
+                if (needsRepair) {
+                    String version = ArlRemoteConfig.dataVersion();
+                    dataStatus.setText("ATUALIZAÇÃO ARL NECESSÁRIA"
+                            + (version.isEmpty() ? "" : " • " + version));
+                } else {
+                    String installed = ArlDataManager.installedVersion(this);
+                    dataStatus.setText("ARQUIVOS ARL VERIFICADOS"
+                            + (installed.isEmpty() ? "" : " • " + installed));
+                }
+                updatePlayEnabled();
+            });
+        });
     }
 
     private void beginRepair(boolean force) {
@@ -420,6 +444,9 @@ public class MainActivity extends AppCompatActivity {
         }
 
         dataBusy = true;
+        dataIntegrityKnown = false;
+        dataRepairNeeded = true;
+        ++dataIntegrityGeneration;
         repairButton.setEnabled(false);
         dataProgress.setVisibility(View.VISIBLE);
         dataProgress.setIndeterminate(false);
@@ -458,7 +485,7 @@ public class MainActivity extends AppCompatActivity {
         if (!ArlRemoteConfig.hasDataRelease()) return false;
         if (!ArlRemoteConfig.dataManifestReady()) return true;
         if (!ArlDataManager.isConfigured()) return true;
-        return ArlDataManager.requiresRepair(this);
+        return !dataIntegrityKnown || dataRepairNeeded;
     }
 
     private void updatePlayEnabled() {
@@ -503,7 +530,7 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Não foi possível verificar a integridade dos arquivos ARL.", Toast.LENGTH_LONG).show();
             return;
         }
-        if (ArlDataManager.isConfigured() && ArlDataManager.requiresRepair(this)) {
+        if (ArlDataManager.isConfigured() && (!dataIntegrityKnown || dataRepairNeeded)) {
             Toast.makeText(this, "Os arquivos do ARL precisam ser atualizados antes de jogar.", Toast.LENGTH_LONG).show();
             beginRepair(false);
             return;
