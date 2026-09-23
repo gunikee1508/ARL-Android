@@ -74,7 +74,6 @@ void SortEntriesHook(TextureDatabaseRuntime* db, bool skipThumbs) {
 
 bool EngineReady() {
     if (!g_pszStorage || !g_pszStorage[0]) return false;
-    if (!g_hookInstalled) return false;
     if (!CStreaming::ms_files[0].m_szName[0]) return false;
     return TextureDatabaseRuntime::GetDatabase("gta3") != nullptr;
 }
@@ -213,6 +212,12 @@ void Apply() {
 } // namespace
 
 void InstallHooks() {
+    // Called during native bootstrap. Stock databases (including player) have
+    // not loaded yet, so leave their startup path completely untouched.
+    FLog("[ARL Brasil] loose TEXDB hook deferred until game textures are ready");
+}
+
+void InstallHookAfterStartup() {
     if (g_hookInstalled) return;
     CHook::InlineHook("_ZN22TextureDatabaseRuntime11SortEntriesEb",
                       &SortEntriesHook, &g_origSortEntries);
@@ -225,6 +230,12 @@ void Tick() {
     if (g_applied.load(std::memory_order_acquire) ||
         g_failed.load(std::memory_order_acquire)) return;
     if (!EngineReady() || !PayloadPresent()) return;
+    InstallHookAfterStartup();
+    if (!g_hookInstalled) {
+        WriteStatus("failed: texdb hook\n");
+        g_failed.store(true, std::memory_order_release);
+        return;
+    }
     Apply();
 }
 
@@ -233,3 +244,4 @@ bool Applied() {
 }
 
 } // namespace ArlBrasilLayer
+
